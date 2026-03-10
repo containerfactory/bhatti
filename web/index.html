@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Forge</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1117; color: #c9d1d9; display: flex; height: 100vh; overflow: hidden; }
+
+  /* Sidebar */
+  #sidebar { width: 260px; background: #161b22; border-right: 1px solid #30363d; display: flex; flex-direction: column; flex-shrink: 0; }
+  #sidebar-header { padding: 16px; border-bottom: 1px solid #30363d; }
+  #sidebar-header h1 { font-size: 18px; font-weight: 600; color: #f0f6fc; }
+  #sidebar-header p { font-size: 12px; color: #8b949e; margin-top: 4px; }
+
+  #create-section { padding: 12px 16px; border-bottom: 1px solid #30363d; }
+  #create-section select, #create-section input, #create-section button {
+    width: 100%; padding: 6px 10px; margin-bottom: 8px; border-radius: 6px; border: 1px solid #30363d;
+    background: #0d1117; color: #c9d1d9; font-size: 13px;
+  }
+  #create-section button { background: #238636; border-color: #238636; color: #fff; cursor: pointer; font-weight: 500; }
+  #create-section button:hover { background: #2ea043; }
+  #create-section button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  #sandbox-list { flex: 1; overflow-y: auto; padding: 8px 0; }
+  .sandbox-item {
+    padding: 10px 16px; cursor: pointer; display: flex; align-items: center; gap: 10px;
+    border-left: 3px solid transparent; transition: background 0.1s;
+  }
+  .sandbox-item:hover { background: #1c2128; }
+  .sandbox-item.active { background: #1c2128; border-left-color: #58a6ff; }
+  .sandbox-item .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .sandbox-item .dot.running { background: #3fb950; }
+  .sandbox-item .dot.stopped { background: #f85149; }
+  .sandbox-item .dot.unknown { background: #8b949e; }
+  .sandbox-item .info { flex: 1; min-width: 0; }
+  .sandbox-item .name { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sandbox-item .meta { font-size: 11px; color: #8b949e; }
+  .sandbox-item .actions { display: flex; gap: 4px; }
+  .sandbox-item .actions button {
+    background: none; border: 1px solid #30363d; color: #8b949e; border-radius: 4px;
+    padding: 2px 6px; font-size: 11px; cursor: pointer;
+  }
+  .sandbox-item .actions button:hover { color: #f85149; border-color: #f85149; }
+
+  /* Main area */
+  #main { flex: 1; display: flex; flex-direction: column; }
+  #toolbar { padding: 8px 16px; background: #161b22; border-bottom: 1px solid #30363d; display: flex; align-items: center; gap: 12px; min-height: 40px; }
+  #toolbar .title { font-size: 14px; font-weight: 500; }
+  #toolbar .status-badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; }
+  #toolbar .status-badge.running { background: #238636; color: #fff; }
+  #toolbar .status-badge.stopped { background: #da3633; color: #fff; }
+
+  #terminal-container { flex: 1; padding: 4px; background: #0d1117; }
+  #terminal-container .xterm { height: 100%; }
+
+  #placeholder { flex: 1; display: flex; align-items: center; justify-content: center; color: #484f58; font-size: 15px; }
+
+  /* Template management */
+  #template-section { padding: 12px 16px; border-top: 1px solid #30363d; }
+  #template-section summary { font-size: 12px; color: #8b949e; cursor: pointer; }
+  #template-section .tmpl-form input, #template-section .tmpl-form button {
+    width: 100%; padding: 5px 8px; margin-top: 6px; border-radius: 6px; border: 1px solid #30363d;
+    background: #0d1117; color: #c9d1d9; font-size: 12px;
+  }
+  #template-section .tmpl-form button { background: #30363d; cursor: pointer; }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+  <div id="sidebar-header">
+    <h1>⚒ Forge</h1>
+    <p>Sandbox Manager</p>
+  </div>
+
+  <div id="create-section">
+    <select id="template-select"><option value="">Select template...</option></select>
+    <input id="sandbox-name" type="text" placeholder="Sandbox name (optional)">
+    <button id="create-btn" onclick="createSandbox()" disabled>Create Sandbox</button>
+  </div>
+
+  <div id="sandbox-list"></div>
+
+  <div id="template-section">
+    <details>
+      <summary>+ Add Template</summary>
+      <div class="tmpl-form">
+        <input id="tmpl-name" placeholder="Name (e.g. ubuntu-dev)">
+        <input id="tmpl-image" placeholder="Image (e.g. ubuntu:22.04)">
+        <input id="tmpl-cpus" placeholder="CPUs (default: 1)" type="number" step="0.5" min="0.5">
+        <input id="tmpl-memory" placeholder="Memory MB (default: 512)" type="number" min="64">
+        <button onclick="createTemplate()">Add Template</button>
+      </div>
+    </details>
+  </div>
+</div>
+
+<div id="main">
+  <div id="toolbar">
+    <span class="title" id="toolbar-title"></span>
+    <span class="status-badge" id="toolbar-status" style="display:none"></span>
+  </div>
+  <div id="placeholder">Select or create a sandbox to start</div>
+  <div id="terminal-container" style="display:none"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+<script>
+const API = location.origin;
+let token = localStorage.getItem('forge_token') || '';
+let currentSandbox = null;
+let term = null;
+let ws = null;
+let fitAddon = null;
+
+// --- API helpers ---
+async function api(method, path, body) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (token) opts.headers['Authorization'] = 'Bearer ' + token;
+  if (body) opts.body = JSON.stringify(body);
+  const resp = await fetch(API + path, opts);
+  return { status: resp.status, data: await resp.json() };
+}
+
+// --- Templates ---
+async function loadTemplates() {
+  const { data } = await api('GET', '/templates');
+  const sel = document.getElementById('template-select');
+  sel.innerHTML = '<option value="">Select template...</option>';
+  (data || []).forEach(t => {
+    const opt = document.createElement('option');
+    opt.value = t.id;
+    opt.textContent = `${t.name} (${t.image})`;
+    sel.appendChild(opt);
+  });
+}
+
+document.getElementById('template-select').addEventListener('change', (e) => {
+  document.getElementById('create-btn').disabled = !e.target.value;
+});
+
+async function createTemplate() {
+  const name = document.getElementById('tmpl-name').value.trim();
+  const image = document.getElementById('tmpl-image').value.trim();
+  if (!name || !image) return alert('Name and image required');
+  const cpus = parseFloat(document.getElementById('tmpl-cpus').value) || 1;
+  const memory = parseInt(document.getElementById('tmpl-memory').value) || 512;
+  await api('POST', '/templates', { name, image, cpus, memory_mb: memory });
+  document.getElementById('tmpl-name').value = '';
+  document.getElementById('tmpl-image').value = '';
+  document.getElementById('tmpl-cpus').value = '';
+  document.getElementById('tmpl-memory').value = '';
+  loadTemplates();
+}
+
+// --- Sandboxes ---
+async function loadSandboxes() {
+  const { data } = await api('GET', '/sandboxes');
+  const list = document.getElementById('sandbox-list');
+  list.innerHTML = '';
+  (data || []).forEach(sb => {
+    const div = document.createElement('div');
+    div.className = 'sandbox-item' + (currentSandbox && currentSandbox.id === sb.id ? ' active' : '');
+    div.innerHTML = `
+      <div class="dot ${sb.status}"></div>
+      <div class="info" onclick="connectSandbox('${sb.id}')">
+        <div class="name">${sb.name}</div>
+        <div class="meta">${sb.ip || 'no ip'} · ${sb.status}</div>
+      </div>
+      <div class="actions">
+        <button onclick="event.stopPropagation(); destroySandbox('${sb.id}')" title="Destroy">✕</button>
+      </div>
+    `;
+    list.appendChild(div);
+  });
+}
+
+async function createSandbox() {
+  const templateId = document.getElementById('template-select').value;
+  if (!templateId) return;
+  const name = document.getElementById('sandbox-name').value.trim();
+  const btn = document.getElementById('create-btn');
+  btn.disabled = true;
+  btn.textContent = 'Creating...';
+  try {
+    const { status, data } = await api('POST', '/sandboxes', { template_id: templateId, name: name || undefined });
+    if (status === 201) {
+      document.getElementById('sandbox-name').value = '';
+      await loadSandboxes();
+      connectSandbox(data.id);
+    } else {
+      alert('Error: ' + (data.error || 'unknown'));
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Create Sandbox';
+  }
+}
+
+async function destroySandbox(id) {
+  if (!confirm('Destroy this sandbox?')) return;
+  await api('DELETE', '/sandboxes/' + id);
+  if (currentSandbox && currentSandbox.id === id) {
+    disconnectTerminal();
+    currentSandbox = null;
+    showPlaceholder();
+  }
+  loadSandboxes();
+}
+
+// --- Terminal ---
+async function connectSandbox(id) {
+  const { data } = await api('GET', '/sandboxes/' + id);
+  currentSandbox = data;
+  loadSandboxes(); // refresh active state
+
+  document.getElementById('toolbar-title').textContent = data.name;
+  const badge = document.getElementById('toolbar-status');
+  badge.textContent = data.status;
+  badge.className = 'status-badge ' + data.status;
+  badge.style.display = '';
+
+  hidePlaceholder();
+  disconnectTerminal();
+  initTerminal(id);
+}
+
+function showPlaceholder() {
+  document.getElementById('placeholder').style.display = 'flex';
+  document.getElementById('terminal-container').style.display = 'none';
+  document.getElementById('toolbar-title').textContent = '';
+  document.getElementById('toolbar-status').style.display = 'none';
+}
+
+function hidePlaceholder() {
+  document.getElementById('placeholder').style.display = 'none';
+  document.getElementById('terminal-container').style.display = '';
+}
+
+function disconnectTerminal() {
+  if (ws) { ws.close(); ws = null; }
+  if (term) { term.dispose(); term = null; }
+  document.getElementById('terminal-container').innerHTML = '';
+}
+
+function initTerminal(sandboxId) {
+  term = new Terminal({
+    cursorBlink: true,
+    fontSize: 14,
+    fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, monospace",
+    theme: {
+      background: '#0d1117',
+      foreground: '#c9d1d9',
+      cursor: '#58a6ff',
+      selectionBackground: '#264f78',
+      black: '#484f58', red: '#ff7b72', green: '#3fb950', yellow: '#d29922',
+      blue: '#58a6ff', magenta: '#bc8cff', cyan: '#39d353', white: '#b1bac4',
+    }
+  });
+
+  fitAddon = new FitAddon.FitAddon();
+  term.loadAddon(fitAddon);
+  term.open(document.getElementById('terminal-container'));
+  fitAddon.fit();
+
+  // WebSocket
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = proto + '//' + location.host + '/sandboxes/' + sandboxId + '/ws';
+  ws = new WebSocket(wsUrl);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    // Send initial resize
+    ws.send(JSON.stringify({ type: 'resize', rows: term.rows, cols: term.cols }));
+  };
+
+  ws.onmessage = (e) => {
+    const data = typeof e.data === 'string' ? e.data : new Uint8Array(e.data);
+    term.write(data);
+  };
+
+  ws.onclose = () => {
+    term.write('\r\n\x1b[33m[connection closed]\x1b[0m\r\n');
+  };
+
+  term.onData((data) => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(new TextEncoder().encode(data));
+    }
+  });
+
+  term.onResize(({ rows, cols }) => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'resize', rows, cols }));
+    }
+  });
+
+  // Handle window resize
+  window.addEventListener('resize', () => { if (fitAddon) fitAddon.fit(); });
+}
+
+// --- Auth ---
+function setToken() {
+  const t = prompt('Enter auth token (leave empty for no auth):');
+  if (t !== null) {
+    token = t;
+    localStorage.setItem('forge_token', t);
+    loadTemplates();
+    loadSandboxes();
+  }
+}
+
+// --- Init ---
+loadTemplates();
+loadSandboxes();
+setInterval(loadSandboxes, 5000); // refresh every 5s
+</script>
+</body>
+</html>

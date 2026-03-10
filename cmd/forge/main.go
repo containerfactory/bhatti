@@ -43,9 +43,18 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// Find web directory
+	webDir := "web"
+	if _, err := os.Stat(webDir); os.IsNotExist(err) {
+		// Try relative to executable
+		if ex, err := os.Executable(); err == nil {
+			webDir = filepath.Join(filepath.Dir(ex), "web")
+		}
+	}
+
 	// Start server
-	srv := server.New(eng, st, cfg.AuthToken)
-	log.Printf("forge listening on %s", cfg.Listen)
+	srv := server.New(eng, st, cfg.AuthToken, webDir)
+	log.Printf("forge listening on %s (web: %s)", cfg.Listen, webDir)
 	if err := http.ListenAndServe(cfg.Listen, srv); err != nil {
 		log.Fatal(err)
 	}
