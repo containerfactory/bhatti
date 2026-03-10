@@ -9,9 +9,6 @@ export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
 
-# Cargo/Rust
-[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
-
 # Go
 export PATH="/usr/local/go/bin:$HOME/go/bin:$PATH"
 
@@ -45,11 +42,6 @@ compinit
 alias ls='eza --icons=auto --group-directories-first'
 alias ll='eza --icons=auto --group-directories-first -lah --git'
 alias lt='eza --icons=auto --tree --level=2'
-
-# pi agent (if built)
-if [ -f "$HOME/Projects/pi-mono/pi-test.sh" ]; then
-    alias pi='$HOME/Projects/pi-mono/pi-test.sh'
-fi
 
 # --- Starship prompt ---
 eval "$(starship init zsh)"

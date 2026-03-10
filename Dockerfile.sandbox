@@ -56,21 +56,8 @@ RUN curl -fsSL "https://go.dev/dl/go${GOVERSION}.linux-$(dpkg --print-architectu
     | sudo tar -C /usr/local -xz
 ENV PATH="/usr/local/go/bin:/home/sahil/go/bin:${PATH}"
 
-# --- Rust ---
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-ENV PATH="/home/sahil/.cargo/bin:${PATH}"
-
 # --- Claude CLI ---
 RUN . "$NVM_DIR/nvm.sh" && npm install -g @anthropic-ai/claude-code
-
-# --- pi agent ---
-# Copied from host build context (Makefile handles this)
-COPY --chown=sahil:sahil pi-mono/ /home/sahil/Projects/pi-mono/
-RUN if [ -f /home/sahil/Projects/pi-mono/package.json ]; then \
-      . "$NVM_DIR/nvm.sh" \
-      && cd /home/sahil/Projects/pi-mono \
-      && npm install && npm run build; \
-    fi
 
 # --- Dotfiles ---
 COPY --chown=sahil:sahil dotfiles/ /home/sahil/.dotfiles/
