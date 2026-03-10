@@ -313,7 +313,8 @@
   #placeholder .subtitle { font-size: 13px; }
 
   /* Terminal */
-  #terminal-container { flex: 1; padding: 4px; background: var(--bg); overflow: hidden; }
+  #terminal-container { flex: 1; background: var(--bg); overflow: hidden; }
+  #terminal-container .xterm-viewport { overflow-y: hidden !important; }
   #terminal-container .xterm { height: 100%; }
 
   /* Sandbox detail bar */
@@ -510,7 +511,6 @@
     </div>
 
     <div id="detail-bar">
-      <div class="detail-item"><span class="detail-label">IP</span><span class="detail-value" id="detail-ip">—</span></div>
       <div class="detail-item"><span class="detail-label">Template</span><span class="detail-value" id="detail-template">—</span></div>
       <div class="detail-item"><span class="detail-label">Created</span><span class="detail-value" id="detail-created">—</span></div>
     </div>
@@ -826,7 +826,6 @@ async function connectSandbox(id) {
   badge.style.display = '';
 
   // Detail bar
-  document.getElementById('detail-ip').textContent = data.ip || '—';
   document.getElementById('detail-template').textContent = getTemplateName(data.template_id);
   document.getElementById('detail-created').textContent = formatTime(data.created_at);
   document.getElementById('detail-bar').style.display = 'flex';

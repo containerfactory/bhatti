@@ -1,10 +1,13 @@
 package main
 
 import (
+	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/sahilshubham/forge/pkg"
 	"github.com/sahilshubham/forge/pkg/engine/docker"
@@ -54,8 +57,53 @@ func main() {
 
 	// Start server
 	srv := server.New(eng, st, cfg.AuthToken, webDir)
-	log.Printf("forge listening on %s (web: %s)", cfg.Listen, webDir)
+
+	// Resolve the port for display
+	port := cfg.Listen
+	if strings.HasPrefix(port, ":") {
+		port = port // already just ":PORT"
+	}
+
+	log.Printf("forge listening on %s", cfg.Listen)
+	if lanIP := getLanIP(); lanIP != "" {
+		log.Printf("  → local:   http://localhost%s", port)
+		log.Printf("  → network: http://%s%s", lanIP, port)
+	}
+
 	if err := http.ListenAndServe(cfg.Listen, srv); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// getLanIP returns the first non-loopback IPv4 address, or "" if none found.
+func getLanIP() string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			if ip == nil || ip.IsLoopback() {
+				continue
+			}
+			if ip4 := ip.To4(); ip4 != nil {
+				return fmt.Sprintf("%s", ip4)
+			}
+		}
+	}
+	return ""
 }
