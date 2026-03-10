@@ -15,6 +15,10 @@ sandbox:
 	cp -rL ~/.dotfiles .build-ctx/dotfiles
 	rm -rf .build-ctx/dotfiles/.git
 	rm -f .build-ctx/dotfiles/wm/.yabairc .build-ctx/dotfiles/wm/.skhdrc .build-ctx/dotfiles/wm/cycle-space.sh
+	cp ~/.claude.json .build-ctx/claude.json
+	mkdir -p .build-ctx/claude-settings
+	cp ~/.claude/settings.json .build-ctx/claude-settings/settings.json
+	security find-generic-password -s "Claude Code-credentials" -w > .build-ctx/claude-settings/.credentials.json 2>/dev/null || true
 	docker build -t forge-sandbox .build-ctx
 	rm -rf .build-ctx
 

@@ -1,7 +1,6 @@
-# forge sandbox — Linux-compatible zshrc
-# Stripped of: brew, yabai, skhd, LM Studio, bun, supabase, twilio, slicer, opencode
+# forge sandbox zshrc — sources real dotfiles zshrc with Linux compatibility shims
 
-# Secrets — baked into image from ~/.dotfiles/shell/.secrets
+# Secrets
 [ -f "$HOME/.dotfiles/shell/.secrets" ] && source "$HOME/.dotfiles/shell/.secrets"
 
 # nvm
@@ -11,6 +10,9 @@ export NVM_DIR="$HOME/.nvm"
 
 # Go
 export PATH="/usr/local/go/bin:$HOME/go/bin:$PATH"
+
+# Stub out missing macOS bits so the real zshrc doesn't error
+command -v brew &>/dev/null || eval 'brew() { :; }'
 
 # --- Zinit ---
 if [[ ! -f $HOME/.local/share/zinit/zinit.git/zinit.zsh ]]; then
@@ -38,10 +40,11 @@ zinit snippet OMZ::plugins/git/git.plugin.zsh
 autoload -Uz compinit
 compinit
 
-# --- Aliases ---
+# --- Aliases (same as host) ---
 alias ls='eza --icons=auto --group-directories-first'
 alias ll='eza --icons=auto --group-directories-first -lah --git'
 alias lt='eza --icons=auto --tree --level=2'
+alias afk='echo "no screensaver in container"'
 
 # --- Starship prompt ---
 eval "$(starship init zsh)"

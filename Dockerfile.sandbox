@@ -59,6 +59,10 @@ ENV PATH="/usr/local/go/bin:/home/sahil/go/bin:${PATH}"
 # --- Claude CLI ---
 RUN . "$NVM_DIR/nvm.sh" && npm install -g @anthropic-ai/claude-code
 
+# --- Auth credentials (Claude) ---
+COPY --chown=sahil:sahil claude.json /home/sahil/.claude.json
+COPY --chown=sahil:sahil claude-settings/ /home/sahil/.claude/
+
 # --- Dotfiles ---
 COPY --chown=sahil:sahil dotfiles/ /home/sahil/.dotfiles/
 
