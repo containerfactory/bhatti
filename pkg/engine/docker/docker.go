@@ -3,6 +3,7 @@ package docker
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"strings"
@@ -368,9 +369,11 @@ func (e *Engine) Shell(ctx context.Context, id string) (engine.TerminalConn, err
 	cmd := []string{shell, "-li"}
 	hasTmux, err := e.Exec(ctx, id, []string{"which", "tmux"})
 	if err == nil && hasTmux.ExitCode == 0 {
-		// tmux new-session -A -s main: attach if exists, create if not.
-		// Set default-shell so new windows/panes use the user's shell.
-		cmd = []string{"tmux", "new-session", "-A", "-s", "main"}
+		// tmux new-session -AD -s main: create session if needed, attach
+		// if it exists, and detach any other clients. The -D flag ensures
+		// only one terminal connection drives the session at a time,
+		// preventing double input from stale WebSocket reconnects.
+		cmd = []string{"tmux", "new-session", "-AD", "-s", "main"}
 	}
 
 	execCfg := types.ExecConfig{
@@ -401,8 +404,14 @@ func (e *Engine) Shell(ctx context.Context, id string) (engine.TerminalConn, err
 }
 
 func (e *Engine) Tunnel(ctx context.Context, id string, port int) (io.ReadWriteCloser, error) {
+	// Try IPv4 first, fall back to IPv6. Failed socat exits immediately
+	// without consuming stdin, so the fallback inherits the full input.
+	cmd := fmt.Sprintf(
+		`socat STDIO TCP4:127.0.0.1:%d 2>/dev/null || socat STDIO TCP6:[::1]:%d`,
+		port, port,
+	)
 	execCfg := types.ExecConfig{
-		Cmd:          []string{"socat", "STDIO", fmt.Sprintf("TCP:localhost:%d", port)},
+		Cmd:          []string{"sh", "-c", cmd},
 		AttachStdin:  true,
 		AttachStdout: true,
 		AttachStderr: true,
@@ -421,10 +430,41 @@ func (e *Engine) Tunnel(ctx context.Context, id string, port int) (io.ReadWriteC
 }
 
 // tunnelConn wraps a Docker exec attach for raw TCP tunneling (non-TTY).
+//
+// In non-TTY mode, Docker multiplexes stdout/stderr over the hijacked
+// connection. Each chunk is prefixed with an 8-byte header:
+//
+//	[stream_type (1 byte)] [0, 0, 0] [size (4 bytes big-endian)] [payload]
+//
+// Writes go to the raw connection (stdin has no framing).
+// Reads strip the multiplexing headers so callers see clean bytes.
 type tunnelConn struct {
-	resp types.HijackedResponse
+	resp    types.HijackedResponse
+	remain  int // bytes left in the current frame
 }
 
-func (t *tunnelConn) Read(p []byte) (int, error)  { return t.resp.Reader.Read(p) }
+func (t *tunnelConn) Read(p []byte) (int, error) {
+	for t.remain == 0 {
+		// Read the next 8-byte Docker stream header
+		var hdr [8]byte
+		if _, err := io.ReadFull(t.resp.Reader, hdr[:]); err != nil {
+			return 0, err
+		}
+		t.remain = int(binary.BigEndian.Uint32(hdr[4:8]))
+		if t.remain == 0 {
+			continue // empty frame, skip
+		}
+	}
+
+	// Read payload bytes, up to what's left in the current frame
+	toRead := len(p)
+	if toRead > t.remain {
+		toRead = t.remain
+	}
+	n, err := t.resp.Reader.Read(p[:toRead])
+	t.remain -= n
+	return n, err
+}
+
 func (t *tunnelConn) Write(p []byte) (int, error) { return t.resp.Conn.Write(p) }
 func (t *tunnelConn) Close() error                { t.resp.Close(); return nil }

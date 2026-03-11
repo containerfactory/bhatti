@@ -1057,7 +1057,7 @@ function hidePlaceholder() {
 
 function disconnectTerminal() {
   clearTimeout(reconnectTimer);
-  if (ws) { ws.close(); ws = null; }
+  if (ws) { ws.onclose = null; ws.onerror = null; ws.close(); ws = null; }
   if (term) { term.dispose(); term = null; }
   document.getElementById('terminal-container').innerHTML = '';
   setConnState('connected');
@@ -1201,8 +1201,10 @@ async function pollPorts() {
   }
 
   container.innerHTML = ports.map(p => {
-    const url = location.origin + p.proxy_url;
-    return `<a class="port-pill" href="${esc(url)}" target="_blank" rel="noopener" title="Port ${p.container_port} (proxied)">` +
+    const url = p.host_port
+      ? `${location.protocol}//${location.hostname}:${p.host_port}`
+      : location.origin + p.proxy_url;
+    return `<a class="port-pill" href="${esc(url)}" target="_blank" rel="noopener" title="Port ${p.container_port}${p.host_port ? ' → localhost:' + p.host_port : ' (proxied)'}">` +
       `<span class="port-icon">↗</span>${p.container_port}` +
       `</a>`;
   }).join('');

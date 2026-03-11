@@ -700,7 +700,7 @@ func (s *Server) handleProxyHTTP(w http.ResponseWriter, r *http.Request, engineI
 	}
 	defer resp.Body.Close()
 
-	// Copy response headers
+	// Copy response headers and body
 	for k, vv := range resp.Header {
 		for _, v := range vv {
 			w.Header().Add(k, v)
