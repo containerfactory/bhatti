@@ -363,6 +363,13 @@ func (e *Engine) Shell(ctx context.Context, id string) (engine.TerminalConn, err
 		}
 	}
 
+	// Prefer the container's configured WorkingDir (e.g. /workspace) over
+	// the user's passwd home. The image author sets WORKDIR to indicate
+	// where project files live; the home dir is for dotfiles/config.
+	if info.Config.WorkingDir != "" && info.Config.WorkingDir != "/" {
+		workDir = info.Config.WorkingDir
+	}
+
 	// Use tmux if available — creates or attaches to session "main".
 	// This gives: shared session across multiple devices, and session
 	// persistence across WebSocket reconnects within a running container.
