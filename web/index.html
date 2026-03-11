@@ -222,10 +222,20 @@
     justify-content: center;
     transition: color 0.15s, border-color 0.15s;
   }
-  .sandbox-item .action-btn:hover { color: var(--fg); border-color: var(--border-hover); }
-  .sandbox-item .action-btn.delete-btn:hover { color: var(--destructive); border-color: var(--destructive); }
-  .sandbox-item .action-btn.resume-btn:hover { color: var(--success); border-color: var(--success); }
-  .sandbox-item .action-btn.pause-btn:hover { color: var(--warning); border-color: var(--warning); }
+  .sandbox-item .action-btn:hover:not(:disabled) { color: var(--fg); border-color: var(--border-hover); }
+  .sandbox-item .action-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .sandbox-item .action-btn.delete-btn:hover:not(:disabled) { color: var(--destructive); border-color: var(--destructive); }
+  .sandbox-item .action-btn.resume-btn:hover:not(:disabled) { color: var(--success); border-color: var(--success); }
+  .sandbox-item .action-btn.pause-btn:hover:not(:disabled) { color: var(--warning); border-color: var(--warning); }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner {
+    width: 14px; height: 14px;
+    border: 2px solid var(--border);
+    border-top-color: var(--fg-muted);
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+  }
 
   .empty-state {
     display: flex;
@@ -499,6 +509,12 @@
           <option value="">Select template…</option>
         </select>
         <input id="sandbox-name" type="text" placeholder="Name (optional)">
+        <div id="volume-section" style="display:none">
+          <label style="font-size:12px;color:var(--fg-dim);margin-bottom:2px;display:block">Workspace volume</label>
+          <select id="volume-select">
+            <option value="__new__">Create new volume</option>
+          </select>
+        </div>
         <button class="btn btn-primary" id="create-btn" onclick="createSandbox()" disabled>
           Create Sandbox
         </button>
@@ -580,7 +596,9 @@ let reconnectTimer = null;
 let reconnectAttempts = 0;
 const MAX_RECONNECT_DELAY = 15000;
 let templates = [];     // cached for detail view lookups
+let volumes = [];       // cached for create form
 let confirmCallback = null;
+let pendingActions = new Set(); // sandbox IDs with in-flight pause/resume
 
 // ============================================================
 // Auth
@@ -711,7 +729,28 @@ async function loadTemplates() {
 
 document.getElementById('template-select').addEventListener('change', (e) => {
   document.getElementById('create-btn').disabled = !e.target.value;
+  const tmpl = templates.find(t => t.id === e.target.value);
+  const volSection = document.getElementById('volume-section');
+  if (tmpl && tmpl.mounts && tmpl.mounts.length > 0) {
+    volSection.style.display = '';
+    loadVolumes();
+  } else {
+    volSection.style.display = 'none';
+  }
 });
+
+async function loadVolumes() {
+  const { data } = await api('GET', '/volumes');
+  volumes = data || [];
+  const sel = document.getElementById('volume-select');
+  sel.innerHTML = '<option value="__new__">Create new volume</option>';
+  volumes.forEach(v => {
+    const opt = document.createElement('option');
+    opt.value = v.name;
+    opt.textContent = v.name;
+    sel.appendChild(opt);
+  });
+}
 
 function getTemplateName(templateId) {
   const t = templates.find(t => t.id === templateId);
@@ -737,11 +776,16 @@ async function loadSandboxes() {
     const div = document.createElement('div');
     div.className = 'sandbox-item' + (currentSandbox && currentSandbox.id === sb.id ? ' active' : '');
 
+    const isPending = pendingActions.has(sb.id);
     const pauseBtn = sb.status === 'running'
-      ? `<button class="action-btn pause-btn" title="Pause"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg></button>`
+      ? isPending
+        ? `<button class="action-btn pause-btn" disabled title="Pausing…"><div class="spinner"></div></button>`
+        : `<button class="action-btn pause-btn" title="Pause"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg></button>`
       : '';
     const resumeBtn = sb.status === 'stopped'
-      ? `<button class="action-btn resume-btn" title="Resume"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg></button>`
+      ? isPending
+        ? `<button class="action-btn resume-btn" disabled title="Resuming…"><div class="spinner"></div></button>`
+        : `<button class="action-btn resume-btn" title="Resume"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg></button>`
       : '';
 
     div.innerHTML = `
@@ -750,10 +794,10 @@ async function loadSandboxes() {
         <div class="name">${esc(sb.name)}</div>
         <div class="meta">${sb.status}${sb.ip ? ' · ' + sb.ip : ''}</div>
       </div>
-      <div class="actions">
+      <div class="actions" ${isPending ? 'style="opacity:1"' : ''}>
         ${pauseBtn}
         ${resumeBtn}
-        <button class="action-btn delete-btn" title="Destroy">
+        <button class="action-btn delete-btn" ${isPending ? 'disabled' : ''} title="Destroy">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
         </button>
       </div>
@@ -806,16 +850,26 @@ async function createSandbox() {
   btn.disabled = true;
   btn.textContent = 'Creating…';
 
-  const { status, data } = await api('POST', '/sandboxes', {
-    template_id: templateId,
-    name: name || undefined
-  });
+  // Build request
+  const body = { template_id: templateId, name: name || undefined };
+
+  // If a specific existing volume was selected, pass it as an override
+  const tmpl = templates.find(t => t.id === templateId);
+  const volSelect = document.getElementById('volume-select');
+  if (tmpl && tmpl.mounts && tmpl.mounts.length > 0 && volSelect.value !== '__new__') {
+    // Use the selected volume for the first mount target
+    const mount = tmpl.mounts[0];
+    body.volumes = [{ name: volSelect.value, target: mount.target || '/workspace' }];
+  }
+
+  const { status, data } = await api('POST', '/sandboxes', body);
 
   btn.disabled = false;
   btn.textContent = 'Create Sandbox';
 
   if (status === 201) {
     document.getElementById('sandbox-name').value = '';
+    document.getElementById('volume-select').value = '__new__';
     toast('Sandbox created', 'success');
     await loadSandboxes();
     connectSandbox(data.id);
@@ -850,7 +904,13 @@ function destroySandbox(id, name) {
 // Pause / Resume
 // ============================================================
 async function pauseSandbox(id, name) {
+  if (pendingActions.has(id)) return;
+  pendingActions.add(id);
+  loadSandboxes(); // re-render with spinner
+  updateToolbarButtons(id, true);
+
   const { status, data } = await api('POST', '/sandboxes/' + id + '/stop');
+  pendingActions.delete(id);
   if (status === 200) {
     toast('Sandbox paused', 'success');
     if (currentSandbox && currentSandbox.id === id) {
@@ -860,11 +920,18 @@ async function pauseSandbox(id, name) {
     loadSandboxes();
   } else {
     toast(data.error || 'Failed to pause sandbox', 'error');
+    loadSandboxes();
   }
 }
 
 async function resumeSandbox(id, name) {
+  if (pendingActions.has(id)) return;
+  pendingActions.add(id);
+  loadSandboxes(); // re-render with spinner
+  updateToolbarButtons(id, true);
+
   const { status, data } = await api('POST', '/sandboxes/' + id + '/start');
+  pendingActions.delete(id);
   if (status === 200) {
     toast('Sandbox resumed', 'success');
     if (currentSandbox && currentSandbox.id === id) {
@@ -879,6 +946,7 @@ async function resumeSandbox(id, name) {
     loadSandboxes();
   } else {
     toast(data.error || 'Failed to resume sandbox', 'error');
+    loadSandboxes();
   }
 }
 
@@ -891,6 +959,23 @@ function updateToolbar(sb) {
 
   document.getElementById('toolbar-pause').style.display = sb.status === 'running' ? '' : 'none';
   document.getElementById('toolbar-resume').style.display = sb.status === 'stopped' ? '' : 'none';
+}
+
+function updateToolbarButtons(sandboxId, pending) {
+  if (!currentSandbox || currentSandbox.id !== sandboxId) return;
+  const pauseBtn = document.getElementById('toolbar-pause');
+  const resumeBtn = document.getElementById('toolbar-resume');
+  if (pending) {
+    pauseBtn.disabled = true;
+    resumeBtn.disabled = true;
+    if (pauseBtn.style.display !== 'none') pauseBtn.textContent = '⏳';
+    if (resumeBtn.style.display !== 'none') resumeBtn.textContent = '⏳';
+  } else {
+    pauseBtn.disabled = false;
+    resumeBtn.disabled = false;
+    pauseBtn.textContent = '⏸';
+    resumeBtn.textContent = '▶';
+  }
 }
 
 function toolbarPause() {

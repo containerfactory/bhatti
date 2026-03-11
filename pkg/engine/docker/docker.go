@@ -359,8 +359,19 @@ func (e *Engine) Shell(ctx context.Context, id string) (engine.TerminalConn, err
 		}
 	}
 
+	// Use tmux if available — creates or attaches to session "main".
+	// This gives: shared session across multiple devices, and session
+	// persistence across WebSocket reconnects within a running container.
+	cmd := []string{shell, "-li"}
+	hasTmux, err := e.Exec(ctx, id, []string{"which", "tmux"})
+	if err == nil && hasTmux.ExitCode == 0 {
+		// tmux new-session -A -s main: attach if exists, create if not.
+		// Set default-shell so new windows/panes use the user's shell.
+		cmd = []string{"tmux", "new-session", "-A", "-s", "main"}
+	}
+
 	execCfg := types.ExecConfig{
-		Cmd:          []string{shell, "-li"},
+		Cmd:          cmd,
 		User:         user,
 		WorkingDir:   workDir,
 		AttachStdin:  true,
