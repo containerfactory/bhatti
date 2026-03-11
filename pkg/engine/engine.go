@@ -5,6 +5,13 @@ import (
 	"io"
 )
 
+// VolumeMount describes a named volume to mount into a sandbox.
+type VolumeMount struct {
+	Name     string `json:"name"`
+	Target   string `json:"target"`
+	ReadOnly bool   `json:"readonly,omitempty"`
+}
+
 // SandboxSpec describes what to create.
 type SandboxSpec struct {
 	Name       string            `json:"name"`
@@ -15,6 +22,7 @@ type SandboxSpec struct {
 	Env        map[string]string `json:"env"`
 	Labels     map[string]string `json:"labels"`
 	UserData   string            `json:"userdata"`
+	Volumes    []VolumeMount     `json:"volumes,omitempty"`
 }
 
 // SandboxInfo is the runtime state of a sandbox.

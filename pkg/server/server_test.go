@@ -25,7 +25,7 @@ func newMockEngine() *mockEngine {
 }
 
 func (m *mockEngine) Create(_ context.Context, spec engine.SandboxSpec) (engine.SandboxInfo, error) {
-	id := "mock-" + spec.Name
+	id := "mock-" + spec.Name + "-000000000000"
 	info := engine.SandboxInfo{
 		ID:       id[:12],
 		Name:     spec.Name,
@@ -301,6 +301,150 @@ func TestSecretsCRUD(t *testing.T) {
 	resp = doReq(t, ts, "DELETE", "/secrets/api-key", nil)
 	if resp.StatusCode != 200 {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestVolumeCRUD(t *testing.T) {
+	_, ts := setup(t)
+
+	// Create
+	resp := doReq(t, ts, "POST", "/volumes", map[string]any{"name": "test-vol"})
+	if resp.StatusCode != 201 {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+	var vol store.Volume
+	decodeJSON(t, resp, &vol)
+	if vol.Name != "test-vol" {
+		t.Fatalf("expected test-vol, got %s", vol.Name)
+	}
+
+	// List
+	resp = doReq(t, ts, "GET", "/volumes", nil)
+	var list []store.Volume
+	decodeJSON(t, resp, &list)
+	if len(list) != 1 {
+		t.Fatalf("expected 1 volume, got %d", len(list))
+	}
+
+	// Get
+	resp = doReq(t, ts, "GET", "/volumes/test-vol", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// Delete
+	resp = doReq(t, ts, "DELETE", "/volumes/test-vol", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// Get deleted
+	resp = doReq(t, ts, "GET", "/volumes/test-vol", nil)
+	if resp.StatusCode != 404 {
+		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestVolumeDeleteConflict(t *testing.T) {
+	_, ts := setup(t)
+
+	// Create volume
+	doReq(t, ts, "POST", "/volumes", map[string]any{"name": "busy-vol"})
+
+	// Create template and sandbox with that volume
+	resp := doReq(t, ts, "POST", "/templates", map[string]any{
+		"name":  "alpine",
+		"image": "alpine:latest",
+	})
+	var tmpl store.Template
+	decodeJSON(t, resp, &tmpl)
+
+	resp = doReq(t, ts, "POST", "/sandboxes", map[string]any{
+		"template_id": tmpl.ID,
+		"name":        "vol-sb",
+		"volumes":     []map[string]any{{"name": "busy-vol", "target": "/data"}},
+	})
+	if resp.StatusCode != 201 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 201, got %d: %s", resp.StatusCode, body)
+	}
+	var sb store.Sandbox
+	decodeJSON(t, resp, &sb)
+
+	// Try delete volume — should fail with 409
+	resp = doReq(t, ts, "DELETE", "/volumes/busy-vol", nil)
+	if resp.StatusCode != 409 {
+		t.Fatalf("expected 409, got %d", resp.StatusCode)
+	}
+
+	// Destroy sandbox, then delete volume
+	doReq(t, ts, "DELETE", "/sandboxes/"+sb.ID, nil)
+	resp = doReq(t, ts, "DELETE", "/volumes/busy-vol", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestSandboxWithTemplateMounts(t *testing.T) {
+	_, ts := setup(t)
+
+	// Create template with default mounts
+	resp := doReq(t, ts, "POST", "/templates", map[string]any{
+		"name":  "dev-template",
+		"image": "alpine:latest",
+		"mounts": []map[string]any{
+			{"volume_name": "shared-data", "target": "/data", "auto_create": true},
+			{"target": "/workspace", "auto_create": true},
+		},
+	})
+	if resp.StatusCode != 201 {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+	var tmpl store.Template
+	decodeJSON(t, resp, &tmpl)
+	if len(tmpl.Mounts) != 2 {
+		t.Fatalf("expected 2 mounts in template, got %d", len(tmpl.Mounts))
+	}
+
+	// Create sandbox — should use template mounts
+	resp = doReq(t, ts, "POST", "/sandboxes", map[string]any{
+		"template_id": tmpl.ID,
+		"name":        "mount-test",
+	})
+	if resp.StatusCode != 201 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 201, got %d: %s", resp.StatusCode, body)
+	}
+	var sb store.Sandbox
+	decodeJSON(t, resp, &sb)
+
+	// Verify the auto-created volumes exist
+	resp = doReq(t, ts, "GET", "/volumes", nil)
+	var vols []store.Volume
+	decodeJSON(t, resp, &vols)
+
+	volNames := map[string]bool{}
+	for _, v := range vols {
+		volNames[v.Name] = true
+	}
+	if !volNames["shared-data"] {
+		t.Fatal("expected shared-data volume to be auto-created")
+	}
+	if !volNames["bhatti-mount-test-workspace"] {
+		t.Fatalf("expected bhatti-mount-test-workspace volume, got %v", volNames)
+	}
+
+	// Cleanup
+	doReq(t, ts, "DELETE", "/sandboxes/"+sb.ID, nil)
+}
+
+func TestVolumeValidation(t *testing.T) {
+	_, ts := setup(t)
+
+	// Missing name
+	resp := doReq(t, ts, "POST", "/volumes", map[string]any{})
+	if resp.StatusCode != 400 {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
 	}
 }
 

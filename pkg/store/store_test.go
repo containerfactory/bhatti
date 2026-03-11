@@ -199,6 +199,166 @@ func TestSandboxNilEngineMeta(t *testing.T) {
 	}
 }
 
+func TestVolumesCRUD(t *testing.T) {
+	s := testStore(t)
+
+	// Create
+	if err := s.CreateVolume("my-vol"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create is idempotent
+	if err := s.CreateVolume("my-vol"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Get
+	vol, err := s.GetVolume("my-vol")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vol.Name != "my-vol" {
+		t.Fatalf("expected my-vol, got %s", vol.Name)
+	}
+
+	// List
+	list, err := s.ListVolumes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 volume, got %d", len(list))
+	}
+
+	// Delete
+	if err := s.DeleteVolume("my-vol"); err != nil {
+		t.Fatal(err)
+	}
+	list, _ = s.ListVolumes()
+	if len(list) != 0 {
+		t.Fatal("expected 0 volumes after delete")
+	}
+
+	// Delete non-existent
+	if err := s.DeleteVolume("nope"); err == nil {
+		t.Fatal("expected error deleting non-existent volume")
+	}
+}
+
+func TestVolumeDeleteBlockedByAttachment(t *testing.T) {
+	s := testStore(t)
+
+	s.CreateVolume("shared-vol")
+
+	// Create a sandbox so we can attach to it
+	sb := Sandbox{
+		ID:        "s-vol-test",
+		Name:      "vol-sandbox",
+		Status:    "running",
+		CreatedAt: time.Now(),
+	}
+	s.CreateSandbox(sb)
+
+	// Attach
+	if err := s.AttachVolume("s-vol-test", "shared-vol", "/data", false); err != nil {
+		t.Fatal(err)
+	}
+
+	// Delete should fail
+	if err := s.DeleteVolume("shared-vol"); err == nil {
+		t.Fatal("expected error deleting volume in use")
+	}
+
+	// Detach then delete
+	s.DetachVolumes("s-vol-test")
+	if err := s.DeleteVolume("shared-vol"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSandboxVolumes(t *testing.T) {
+	s := testStore(t)
+
+	sb := Sandbox{
+		ID:        "s-sv-test",
+		Name:      "sv-sandbox",
+		Status:    "running",
+		CreatedAt: time.Now(),
+	}
+	s.CreateSandbox(sb)
+
+	// Attach volumes
+	s.AttachVolume("s-sv-test", "vol-a", "/mnt/a", false)
+	s.AttachVolume("s-sv-test", "vol-b", "/mnt/b", true)
+
+	vols, err := s.GetSandboxVolumes("s-sv-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vols) != 2 {
+		t.Fatalf("expected 2 volumes, got %d", len(vols))
+	}
+
+	// Check readonly flag
+	for _, v := range vols {
+		if v.VolumeName == "vol-b" && !v.ReadOnly {
+			t.Fatal("expected vol-b to be readonly")
+		}
+		if v.VolumeName == "vol-a" && v.ReadOnly {
+			t.Fatal("expected vol-a to be read-write")
+		}
+	}
+
+	// Detach
+	s.DetachVolumes("s-sv-test")
+	vols, _ = s.GetSandboxVolumes("s-sv-test")
+	if len(vols) != 0 {
+		t.Fatal("expected 0 volumes after detach")
+	}
+}
+
+func TestTemplateMounts(t *testing.T) {
+	s := testStore(t)
+
+	tmpl := Template{
+		ID:       "t-mounts",
+		Name:     "with-mounts",
+		Engine:   "docker",
+		Image:    "ubuntu:22.04",
+		CPUs:     1,
+		MemoryMB: 512,
+		Mounts: []TemplateMountSpec{
+			{VolumeName: "shared-data", Target: "/data", ReadOnly: false, AutoCreate: true},
+			{Target: "/workspace", AutoCreate: true}, // VolumeName empty = auto-generate
+		},
+		CreatedAt: time.Now().Truncate(time.Second),
+	}
+
+	if err := s.CreateTemplate(tmpl); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.GetTemplate("t-mounts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Mounts) != 2 {
+		t.Fatalf("expected 2 mounts, got %d", len(got.Mounts))
+	}
+	if got.Mounts[0].VolumeName != "shared-data" {
+		t.Fatalf("expected shared-data, got %s", got.Mounts[0].VolumeName)
+	}
+	if got.Mounts[0].Target != "/data" {
+		t.Fatalf("expected /data, got %s", got.Mounts[0].Target)
+	}
+	if got.Mounts[1].Target != "/workspace" {
+		t.Fatalf("expected /workspace, got %s", got.Mounts[1].Target)
+	}
+	if !got.Mounts[1].AutoCreate {
+		t.Fatal("expected auto_create to be true")
+	}
+}
+
 func TestEnsureKeypair(t *testing.T) {
 	// Import from parent package — tested separately
 	_ = os.TempDir()

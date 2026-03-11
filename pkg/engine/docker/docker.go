@@ -11,6 +11,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
@@ -84,8 +85,20 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (engine.Sa
 		cfg.Cmd = []string{"/bin/sh", "-c", spec.UserData}
 	}
 
+	// Build volume mounts
+	var mounts []mount.Mount
+	for _, v := range spec.Volumes {
+		mounts = append(mounts, mount.Mount{
+			Type:     mount.TypeVolume,
+			Source:   v.Name,
+			Target:   v.Target,
+			ReadOnly: v.ReadOnly,
+		})
+	}
+
 	hostCfg := &container.HostConfig{
 		Resources: resources,
+		Mounts:    mounts,
 	}
 
 	resp, err := e.cli.ContainerCreate(ctx, cfg, hostCfg, &network.NetworkingConfig{}, nil, spec.Name)

@@ -23,6 +23,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/sandboxes/", s.handleSandbox)
 	s.mux.HandleFunc("/secrets", s.handleSecrets)
 	s.mux.HandleFunc("/secrets/", s.handleSecret)
+	s.mux.HandleFunc("/volumes", s.handleVolumes)
+	s.mux.HandleFunc("/volumes/", s.handleVolume)
 }
 
 // --- Templates ---
@@ -97,8 +99,9 @@ func (s *Server) handleTemplate(w http.ResponseWriter, r *http.Request) {
 // --- Sandboxes ---
 
 type createSandboxReq struct {
-	Name       string `json:"name"`
-	TemplateID string `json:"template_id"`
+	Name       string              `json:"name"`
+	TemplateID string              `json:"template_id"`
+	Volumes    []engine.VolumeMount `json:"volumes,omitempty"`
 }
 
 func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
@@ -135,6 +138,23 @@ func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 			name = tmpl.Name + "-" + genID()[:6]
 		}
 
+		// Resolve volumes: use request volumes if provided, else template defaults
+		volumes := req.Volumes
+		if len(volumes) == 0 && len(tmpl.Mounts) > 0 {
+			for _, m := range tmpl.Mounts {
+				volName := m.VolumeName
+				if volName == "" {
+					volName = "bhatti-" + name + "-workspace"
+				}
+				if m.AutoCreate {
+					s.store.CreateVolume(volName) // idempotent
+				}
+				volumes = append(volumes, engine.VolumeMount{
+					Name: volName, Target: m.Target, ReadOnly: m.ReadOnly,
+				})
+			}
+		}
+
 		spec := engine.SandboxSpec{
 			Name:     name,
 			Image:    tmpl.Image,
@@ -142,6 +162,7 @@ func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 			MemoryMB: tmpl.MemoryMB,
 			Labels:   tmpl.Labels,
 			UserData: tmpl.UserData,
+			Volumes:  volumes,
 		}
 
 		info, err := s.engine.Create(r.Context(), spec)
@@ -150,8 +171,9 @@ func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		sbID := genID()
 		sb := store.Sandbox{
-			ID:         genID(),
+			ID:         sbID,
 			Name:       name,
 			TemplateID: tmpl.ID,
 			EngineID:   info.EngineID,
@@ -166,6 +188,12 @@ func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 			errResp(w, 500, "store failed: "+err.Error())
 			return
 		}
+
+		// Record volume attachments
+		for _, v := range volumes {
+			s.store.AttachVolume(sbID, v.Name, v.Target, v.ReadOnly)
+		}
+
 		writeJSON(w, 201, sb)
 	default:
 		errResp(w, 405, "method not allowed")
@@ -223,6 +251,7 @@ func (s *Server) handleSandbox(w http.ResponseWriter, r *http.Request) {
 		if err := s.engine.Destroy(r.Context(), sb.EngineID); err != nil {
 			log.Printf("engine destroy warning: %v", err)
 		}
+		s.store.DetachVolumes(id)
 		if err := s.store.DeleteSandbox(id); err != nil {
 			errResp(w, 500, err.Error())
 			return
@@ -423,6 +452,74 @@ func (s *Server) handleSecret(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		if err := s.store.DeleteSecret(name); err != nil {
 			errResp(w, 404, err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]string{"status": "deleted"})
+	default:
+		errResp(w, 405, "method not allowed")
+	}
+}
+
+// --- Volumes ---
+
+func (s *Server) handleVolumes(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		list, err := s.store.ListVolumes()
+		if err != nil {
+			errResp(w, 500, err.Error())
+			return
+		}
+		if list == nil {
+			list = []store.Volume{}
+		}
+		writeJSON(w, 200, list)
+	case http.MethodPost:
+		var req struct {
+			Name string `json:"name"`
+		}
+		if err := readJSON(r, &req); err != nil {
+			errResp(w, 400, "invalid json: "+err.Error())
+			return
+		}
+		if req.Name == "" {
+			errResp(w, 400, "name required")
+			return
+		}
+		if err := s.store.CreateVolume(req.Name); err != nil {
+			errResp(w, 500, err.Error())
+			return
+		}
+		vol, _ := s.store.GetVolume(req.Name)
+		writeJSON(w, 201, vol)
+	default:
+		errResp(w, 405, "method not allowed")
+	}
+}
+
+func (s *Server) handleVolume(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimPrefix(r.URL.Path, "/volumes/")
+	if name == "" {
+		errResp(w, 400, "missing volume name")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		vol, err := s.store.GetVolume(name)
+		if err != nil {
+			errResp(w, 404, "not found")
+			return
+		}
+		writeJSON(w, 200, vol)
+	case http.MethodDelete:
+		if err := s.store.DeleteVolume(name); err != nil {
+			if strings.Contains(err.Error(), "in use") {
+				errResp(w, 409, err.Error())
+			} else if strings.Contains(err.Error(), "not found") {
+				errResp(w, 404, err.Error())
+			} else {
+				errResp(w, 500, err.Error())
+			}
 			return
 		}
 		writeJSON(w, 200, map[string]string{"status": "deleted"})
