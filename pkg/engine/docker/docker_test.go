@@ -132,6 +132,76 @@ func TestDockerLifecycle(t *testing.T) {
 	}
 }
 
+func TestDockerCreateLocalImage(t *testing.T) {
+	skipIfNoDocker(t)
+
+	e, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+
+	// Build a local-only image that doesn't exist on any registry.
+	// This is the real-world case: `make sandbox` builds bhatti-sandbox:latest locally.
+	imgName := "bhatti-test-local-only:latest"
+	cmd := exec.Command("docker", "build", "-t", imgName, "-")
+	cmd.Stdin = strings.NewReader("FROM alpine:latest\nCMD [\"sleep\", \"infinity\"]\n")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to build local image: %v\n%s", err, out)
+	}
+	defer exec.Command("docker", "rmi", imgName).Run()
+
+	name := "bhatti-local-img-" + time.Now().Format("150405")
+
+	// Create should succeed without trying to pull from a registry.
+	// Before the fix, this would hang forever trying to pull from Docker Hub.
+	createCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	info, err := e.Create(createCtx, engine.SandboxSpec{
+		Name:     name,
+		Image:    imgName,
+		CPUs:     0.5,
+		MemoryMB: 64,
+	})
+	if err != nil {
+		t.Fatalf("Create with local-only image failed: %v", err)
+	}
+	defer e.Destroy(ctx, info.EngineID)
+
+	if info.Status != "running" {
+		t.Fatalf("expected running, got %s", info.Status)
+	}
+}
+
+func TestDockerCreateMissingImage(t *testing.T) {
+	skipIfNoDocker(t)
+
+	e, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	name := "bhatti-missing-" + time.Now().Format("150405")
+
+	// A clearly non-existent image should return an error, not hang.
+	_, err = e.Create(ctx, engine.SandboxSpec{
+		Name:     name,
+		Image:    "bhatti-nonexistent-image-xyzzy:latest",
+		CPUs:     0.5,
+		MemoryMB: 64,
+	})
+	if err == nil {
+		// Clean up if it somehow succeeded
+		e.Destroy(context.Background(), name)
+		t.Fatal("expected error for non-existent image, got nil")
+	}
+}
+
 func TestDockerShell(t *testing.T) {
 	skipIfNoDocker(t)
 

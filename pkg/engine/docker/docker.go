@@ -36,15 +36,17 @@ func New() (*Engine, error) {
 }
 
 func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (engine.SandboxInfo, error) {
-	// Pull image if not present
+	// Pull image if not present locally
 	_, _, err := e.cli.ImageInspectWithRaw(ctx, spec.Image)
-	if err != nil {
+	if client.IsErrNotFound(err) {
 		rc, pullErr := e.cli.ImagePull(ctx, spec.Image, image.PullOptions{})
 		if pullErr != nil {
 			return engine.SandboxInfo{}, fmt.Errorf("pull image %s: %w", spec.Image, pullErr)
 		}
 		io.Copy(io.Discard, rc)
 		rc.Close()
+	} else if err != nil {
+		return engine.SandboxInfo{}, fmt.Errorf("inspect image %s: %w", spec.Image, err)
 	}
 
 	// Build env vars
@@ -248,16 +250,17 @@ func (e *Engine) Exec(ctx context.Context, id string, cmd []string) (engine.Exec
 }
 
 func (e *Engine) ListeningPorts(ctx context.Context, id string) ([]int, error) {
-	result, err := e.Exec(ctx, id, []string{"ss", "-tln4", "--no-header"})
-	if err != nil {
-		// Fallback: try netstat if ss not available
-		result, err = e.Exec(ctx, id, []string{"sh", "-c", "cat /proc/net/tcp 2>/dev/null || true"})
-		if err != nil {
-			return nil, err
-		}
-		return parseProcNetTCP(result.Stdout), nil
+	// Try ss first (both IPv4 and IPv6)
+	result, err := e.Exec(ctx, id, []string{"ss", "-tln", "--no-header"})
+	if err == nil && result.ExitCode == 0 {
+		return parseSSOutput(result.Stdout), nil
 	}
-	return parseSSOutput(result.Stdout), nil
+	// Fallback: parse /proc/net/tcp + /proc/net/tcp6
+	result, err = e.Exec(ctx, id, []string{"sh", "-c", "cat /proc/net/tcp /proc/net/tcp6 2>/dev/null || true"})
+	if err != nil {
+		return nil, err
+	}
+	return parseProcNetTCP(result.Stdout), nil
 }
 
 func parseSSOutput(output string) []int {
@@ -396,3 +399,32 @@ func (e *Engine) Shell(ctx context.Context, id string) (engine.TerminalConn, err
 		cli:    e.cli,
 	}, nil
 }
+
+func (e *Engine) Tunnel(ctx context.Context, id string, port int) (io.ReadWriteCloser, error) {
+	execCfg := types.ExecConfig{
+		Cmd:          []string{"socat", "STDIO", fmt.Sprintf("TCP:localhost:%d", port)},
+		AttachStdin:  true,
+		AttachStdout: true,
+		AttachStderr: true,
+	}
+	exec, err := e.cli.ContainerExecCreate(ctx, id, execCfg)
+	if err != nil {
+		return nil, fmt.Errorf("tunnel exec create: %w", err)
+	}
+
+	resp, err := e.cli.ContainerExecAttach(ctx, exec.ID, types.ExecStartCheck{})
+	if err != nil {
+		return nil, fmt.Errorf("tunnel exec attach: %w", err)
+	}
+
+	return &tunnelConn{resp: resp}, nil
+}
+
+// tunnelConn wraps a Docker exec attach for raw TCP tunneling (non-TTY).
+type tunnelConn struct {
+	resp types.HijackedResponse
+}
+
+func (t *tunnelConn) Read(p []byte) (int, error)  { return t.resp.Reader.Read(p) }
+func (t *tunnelConn) Write(p []byte) (int, error) { return t.resp.Conn.Write(p) }
+func (t *tunnelConn) Close() error                { t.resp.Close(); return nil }
