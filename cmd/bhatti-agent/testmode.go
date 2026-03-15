@@ -9,6 +9,10 @@ import (
 )
 
 func runTestMode() {
+	// Ensure PATH is set (matches PID 1 init behavior).
+	if os.Getenv("PATH") == "" {
+		os.Setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+	}
 	controlSock := os.Getenv("BHATTI_AGENT_SOCK")
 	forwardSock := os.Getenv("BHATTI_AGENT_FWD_SOCK")
 	if controlSock == "" || forwardSock == "" {

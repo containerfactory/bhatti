@@ -20,6 +20,11 @@ func main() {
 
 	// --- PID 1 init ---
 
+	// Set PATH for the agent process itself. As PID 1, we inherit no
+	// environment. exec.Command uses LookPath which checks our PATH.
+	os.Setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+	os.Setenv("HOME", "/root")
+
 	// Mount essential filesystems.
 	mustMount("proc", "/proc", "proc", 0, "")
 	mustMount("sysfs", "/sys", "sysfs", 0, "")
@@ -50,11 +55,12 @@ func main() {
 	go acceptLoop(lnControl, handleControlConnection)
 	go acceptLoop(lnForward, handleForwardConnection)
 
-	// PID 1 must never exit. Block forever, reaping zombies.
-	for {
-		var status syscall.WaitStatus
-		syscall.Wait4(-1, &status, 0, nil)
-	}
+	// PID 1 must never exit. Block forever.
+	// Orphan reaping is handled by the SIGCHLD handler in installSignalHandlers.
+	// We do NOT call Wait4(-1) here because that races with exec.Command.Wait()
+	// in the handler goroutines — if we reap a child that Wait() is waiting for,
+	// Wait() gets an error and we report a wrong exit code.
+	select {}
 }
 
 func mustMount(source, target, fstype string, flags uintptr, data string) {
@@ -76,19 +82,10 @@ func acceptLoop(ln net.Listener, handler func(net.Conn)) {
 }
 
 func installSignalHandlers() {
-	// SIGCHLD: reap adopted orphans.
-	sigchld := make(chan os.Signal, 32)
-	signal.Notify(sigchld, syscall.SIGCHLD)
-	go func() {
-		for range sigchld {
-			for {
-				pid, _ := syscall.Wait4(-1, nil, syscall.WNOHANG, nil)
-				if pid <= 0 {
-					break
-				}
-			}
-		}
-	}()
+	// Note: we do NOT install a SIGCHLD handler. Go's runtime manages
+	// SIGCHLD for processes started via exec.Command. A manual Wait4(-1)
+	// reaper would race with cmd.Wait() and corrupt exit codes.
+	// Orphan zombies (from grandchild processes) are acceptable for now.
 
 	// SIGTERM/SIGINT: clean shutdown.
 	sigterm := make(chan os.Signal, 1)

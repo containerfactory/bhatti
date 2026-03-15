@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -50,14 +51,58 @@ func listenVsock(port uint32) (net.Listener, error) {
 		return nil, fmt.Errorf("vsock listen: %w", err)
 	}
 
-	f := os.NewFile(uintptr(fd), fmt.Sprintf("vsock:%d", port))
-	ln, err := net.FileListener(f)
-	f.Close() // FileListener dups the fd
-	if err != nil {
-		return nil, fmt.Errorf("vsock file listener: %w", err)
-	}
-	return ln, nil
+	// Go's net.FileListener doesn't support AF_VSOCK, so we implement
+	// a custom listener that uses raw accept() and wraps connections
+	// via os.NewFile + net.FileConn.
+	return &vsockListener{fd: fd, port: port}, nil
 }
+
+// vsockListener implements net.Listener using a raw AF_VSOCK socket fd.
+type vsockListener struct {
+	fd   int
+	port uint32
+}
+
+func (l *vsockListener) Accept() (net.Conn, error) {
+	// Go's syscall.Accept tries to parse the peer sockaddr and returns
+	// EAFNOSUPPORT for AF_VSOCK. Use raw accept4 syscall instead,
+	// passing nil for addr/addrlen since we don't need the peer address.
+	nfd, _, errno := syscall.Syscall6(syscall.SYS_ACCEPT4,
+		uintptr(l.fd), 0, 0, 0 /* flags */, 0, 0)
+	if errno != 0 {
+		return nil, fmt.Errorf("vsock accept: %v", errno)
+	}
+	f := os.NewFile(nfd, fmt.Sprintf("vsock-conn:%d", l.port))
+	return &vsockConn{file: f}, nil
+}
+
+// vsockConn wraps an os.File as a net.Conn for AF_VSOCK connections.
+type vsockConn struct {
+	file *os.File
+}
+
+func (c *vsockConn) Read(b []byte) (int, error)         { return c.file.Read(b) }
+func (c *vsockConn) Write(b []byte) (int, error)        { return c.file.Write(b) }
+func (c *vsockConn) Close() error                       { return c.file.Close() }
+func (c *vsockConn) LocalAddr() net.Addr                { return vsockAddr(0) }
+func (c *vsockConn) RemoteAddr() net.Addr               { return vsockAddr(0) }
+func (c *vsockConn) SetDeadline(t time.Time) error      { return c.file.SetDeadline(t) }
+func (c *vsockConn) SetReadDeadline(t time.Time) error  { return c.file.SetReadDeadline(t) }
+func (c *vsockConn) SetWriteDeadline(t time.Time) error { return c.file.SetWriteDeadline(t) }
+
+func (l *vsockListener) Close() error {
+	return syscall.Close(l.fd)
+}
+
+func (l *vsockListener) Addr() net.Addr {
+	return vsockAddr(l.port)
+}
+
+type vsockAddr uint32
+
+func (a vsockAddr) Network() string { return "vsock" }
+func (a vsockAddr) String() string  { return fmt.Sprintf("vsock://:%d", uint32(a)) }
+
 
 // Networking ioctl constants.
 const (
