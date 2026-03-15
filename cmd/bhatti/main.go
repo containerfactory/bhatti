@@ -55,6 +55,11 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// Recover Firecracker VMs from store if applicable
+	if provider, ok := eng.(engine.VMStateProvider); ok {
+		recoverVMs(st, provider)
+	}
+
 	// Find web directory
 	webDir := "web"
 	if _, err := os.Stat(webDir); os.IsNotExist(err) {
@@ -81,6 +86,68 @@ func main() {
 
 	if err := http.ListenAndServe(cfg.Listen, srv); err != nil {
 		log.Fatal(err)
+	}
+}
+
+// recoverVMs restores Firecracker VMs from the SQLite store on startup.
+func recoverVMs(st *store.Store, provider engine.VMStateProvider) {
+	sandboxes, err := st.ListSandboxes()
+	if err != nil {
+		log.Printf("warning: recovery list: %v", err)
+		return
+	}
+
+	recovered := 0
+	for _, sb := range sandboxes {
+		if sb.Status == "destroyed" {
+			continue
+		}
+
+		fcState, err := st.LoadFirecrackerState(sb.ID)
+		if err != nil || fcState.RootfsPath == "" {
+			continue // Not a Firecracker sandbox
+		}
+
+		state := map[string]interface{}{
+			"rootfs_path":   fcState.RootfsPath,
+			"snap_mem_path": fcState.SnapMemPath,
+			"snap_vm_path":  fcState.SnapVMPath,
+			"vsock_cid":     fcState.VsockCID,
+			"tap_device":    fcState.TapDevice,
+			"guest_ip":      fcState.GuestIP,
+			"guest_mac":     fcState.GuestMAC,
+			"vcpu_count":    fcState.VcpuCount,
+			"mem_size_mib":  fcState.MemSizeMib,
+			"socket_path":   fcState.SocketPath,
+			"vsock_path":    fcState.VsockPath,
+		}
+
+		if sb.Status == "stopped" && fcState.SnapMemPath != "" {
+			// Has snapshot — can be resumed
+			if _, err := os.Stat(fcState.SnapMemPath); err == nil {
+				provider.RestoreVM(sb.EngineID, sb.Name, "stopped", state)
+				recovered++
+				log.Printf("recovered stopped sandbox %s (%s)", sb.Name, sb.ID)
+			} else {
+				st.UpdateSandboxStatus(sb.ID, "unknown")
+				log.Printf("sandbox %s snapshot missing, marked unknown", sb.Name)
+			}
+		} else if sb.Status == "running" {
+			// Was running — FC process is dead after server restart.
+			if fcState.SnapMemPath != "" {
+				st.UpdateSandboxStatus(sb.ID, "stopped")
+				provider.RestoreVM(sb.EngineID, sb.Name, "stopped", state)
+				recovered++
+				log.Printf("sandbox %s was running, marked stopped (resumable)", sb.Name)
+			} else {
+				st.UpdateSandboxStatus(sb.ID, "unknown")
+				log.Printf("sandbox %s was running with no snapshot, marked unknown", sb.Name)
+			}
+		}
+	}
+
+	if recovered > 0 {
+		log.Printf("recovered %d sandbox(es) from store", recovered)
 	}
 }
 

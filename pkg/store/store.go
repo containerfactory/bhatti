@@ -122,9 +122,20 @@ CREATE TABLE IF NOT EXISTS secrets (
 `
 
 // migrations runs ALTER TABLE statements for columns added after initial schema.
+// Duplicate column errors are silently ignored (idempotent).
 const migrations = `
--- Add mounts_json to templates (idempotent via IF NOT EXISTS workaround)
 ALTER TABLE templates ADD COLUMN mounts_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE sandboxes ADD COLUMN rootfs_path TEXT DEFAULT '';
+ALTER TABLE sandboxes ADD COLUMN snap_mem_path TEXT DEFAULT '';
+ALTER TABLE sandboxes ADD COLUMN snap_vm_path TEXT DEFAULT '';
+ALTER TABLE sandboxes ADD COLUMN vsock_cid INTEGER DEFAULT 0;
+ALTER TABLE sandboxes ADD COLUMN tap_device TEXT DEFAULT '';
+ALTER TABLE sandboxes ADD COLUMN guest_ip TEXT DEFAULT '';
+ALTER TABLE sandboxes ADD COLUMN guest_mac TEXT DEFAULT '';
+ALTER TABLE sandboxes ADD COLUMN vcpu_count REAL DEFAULT 1;
+ALTER TABLE sandboxes ADD COLUMN mem_size_mib INTEGER DEFAULT 512;
+ALTER TABLE sandboxes ADD COLUMN socket_path TEXT DEFAULT '';
+ALTER TABLE sandboxes ADD COLUMN vsock_path TEXT DEFAULT '';
 `
 
 // New opens (or creates) the SQLite database and runs migrations.
@@ -442,4 +453,52 @@ func (s *Store) DeleteSecret(name string) error {
 		return fmt.Errorf("secret %q not found", name)
 	}
 	return nil
+}
+
+// --- Firecracker-specific state persistence ---
+
+// FirecrackerState holds the VM state needed to reconnect or resume.
+type FirecrackerState struct {
+	RootfsPath  string
+	SnapMemPath string
+	SnapVMPath  string
+	VsockCID    int
+	TapDevice   string
+	GuestIP     string
+	GuestMAC    string
+	VcpuCount   float64
+	MemSizeMib  int
+	SocketPath  string
+	VsockPath   string
+}
+
+// SaveFirecrackerState persists Firecracker-specific VM state.
+func (s *Store) SaveFirecrackerState(id string, st FirecrackerState) error {
+	_, err := s.db.Exec(`UPDATE sandboxes SET
+		rootfs_path = ?, snap_mem_path = ?, snap_vm_path = ?,
+		vsock_cid = ?, tap_device = ?, guest_ip = ?, guest_mac = ?,
+		vcpu_count = ?, mem_size_mib = ?, socket_path = ?, vsock_path = ?
+		WHERE id = ?`,
+		st.RootfsPath, st.SnapMemPath, st.SnapVMPath,
+		st.VsockCID, st.TapDevice, st.GuestIP, st.GuestMAC,
+		st.VcpuCount, st.MemSizeMib, st.SocketPath, st.VsockPath,
+		id)
+	return err
+}
+
+// LoadFirecrackerState loads Firecracker-specific VM state.
+func (s *Store) LoadFirecrackerState(id string) (*FirecrackerState, error) {
+	var st FirecrackerState
+	err := s.db.QueryRow(`SELECT
+		COALESCE(rootfs_path,''), COALESCE(snap_mem_path,''), COALESCE(snap_vm_path,''),
+		COALESCE(vsock_cid,0), COALESCE(tap_device,''), COALESCE(guest_ip,''), COALESCE(guest_mac,''),
+		COALESCE(vcpu_count,1), COALESCE(mem_size_mib,512), COALESCE(socket_path,''), COALESCE(vsock_path,'')
+		FROM sandboxes WHERE id = ?`, id).Scan(
+		&st.RootfsPath, &st.SnapMemPath, &st.SnapVMPath,
+		&st.VsockCID, &st.TapDevice, &st.GuestIP, &st.GuestMAC,
+		&st.VcpuCount, &st.MemSizeMib, &st.SocketPath, &st.VsockPath)
+	if err != nil {
+		return nil, err
+	}
+	return &st, nil
 }

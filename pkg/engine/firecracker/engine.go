@@ -396,6 +396,64 @@ func (e *Engine) Status(ctx context.Context, id string) (engine.SandboxInfo, err
 	}, nil
 }
 
+// VMState returns the internal state of a VM for persistence.
+// Returns nil if the VM doesn't exist.
+func (e *Engine) VMState(id string) map[string]interface{} {
+	vm, err := e.getVM(id)
+	if err != nil {
+		return nil
+	}
+	return map[string]interface{}{
+		"rootfs_path":   vm.RootfsPath,
+		"snap_mem_path": vm.SnapMemPath,
+		"snap_vm_path":  vm.SnapVMPath,
+		"vsock_cid":     vm.CID,
+		"tap_device":    vm.TapDevice,
+		"guest_ip":      vm.GuestIP,
+		"guest_mac":     vm.GuestMAC,
+		"vcpu_count":    vm.VcpuCount,
+		"mem_size_mib":  vm.MemSizeMib,
+		"socket_path":   vm.SocketPath,
+		"vsock_path":    vm.VsockPath,
+	}
+}
+
+// RestoreVM adds a VM to the engine's in-memory map from persisted state.
+// Used during startup recovery.
+func (e *Engine) RestoreVM(id, name, status string, state map[string]interface{}) {
+	vm := &VM{
+		ID:         id,
+		Name:       name,
+		Status:     status,
+		RootfsPath: state["rootfs_path"].(string),
+		SocketPath: state["socket_path"].(string),
+		VsockPath:  state["vsock_path"].(string),
+		CID:        uint32(state["vsock_cid"].(int)),
+		TapDevice:  state["tap_device"].(string),
+		GuestIP:    state["guest_ip"].(string),
+		GuestMAC:   state["guest_mac"].(string),
+		VcpuCount:  int64(state["vcpu_count"].(float64)),
+		MemSizeMib: int64(state["mem_size_mib"].(int)),
+	}
+	if v, ok := state["snap_mem_path"].(string); ok {
+		vm.SnapMemPath = v
+	}
+	if v, ok := state["snap_vm_path"].(string); ok {
+		vm.SnapVMPath = v
+	}
+
+	if status == "running" {
+		vm.Agent = agent.NewTCPClient(vm.GuestIP)
+	}
+
+	e.mu.Lock()
+	e.vms[id] = vm
+	if vm.CID >= e.nextCID {
+		e.nextCID = vm.CID + 1
+	}
+	e.mu.Unlock()
+}
+
 func (e *Engine) List(ctx context.Context) ([]engine.SandboxInfo, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()

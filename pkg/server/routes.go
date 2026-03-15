@@ -20,6 +20,62 @@ import (
 	"github.com/sahilshubham/bhatti/pkg/store"
 )
 
+// saveVMState persists Firecracker VM state to the store if the engine supports it.
+func (s *Server) saveVMState(sandboxID, engineID string) {
+	provider, ok := s.engine.(engine.VMStateProvider)
+	if !ok {
+		return
+	}
+	state := provider.VMState(engineID)
+	if state == nil {
+		return
+	}
+	s.store.SaveFirecrackerState(sandboxID, store.FirecrackerState{
+		RootfsPath:  strOrEmpty(state, "rootfs_path"),
+		SnapMemPath: strOrEmpty(state, "snap_mem_path"),
+		SnapVMPath:  strOrEmpty(state, "snap_vm_path"),
+		VsockCID:    intOrZero(state, "vsock_cid"),
+		TapDevice:   strOrEmpty(state, "tap_device"),
+		GuestIP:     strOrEmpty(state, "guest_ip"),
+		GuestMAC:    strOrEmpty(state, "guest_mac"),
+		VcpuCount:   floatOrZero(state, "vcpu_count"),
+		MemSizeMib:  intOrZero(state, "mem_size_mib"),
+		SocketPath:  strOrEmpty(state, "socket_path"),
+		VsockPath:   strOrEmpty(state, "vsock_path"),
+	})
+}
+
+func strOrEmpty(m map[string]interface{}, k string) string {
+	if v, ok := m[k].(string); ok {
+		return v
+	}
+	return ""
+}
+
+func intOrZero(m map[string]interface{}, k string) int {
+	switch v := m[k].(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case uint32:
+		return int(v)
+	case float64:
+		return int(v)
+	}
+	return 0
+}
+
+func floatOrZero(m map[string]interface{}, k string) float64 {
+	switch v := m[k].(type) {
+	case float64:
+		return v
+	case int64:
+		return float64(v)
+	}
+	return 0
+}
+
 func (s *Server) routes() {
 	s.mux.HandleFunc("/templates", s.handleTemplates)
 	s.mux.HandleFunc("/templates/", s.handleTemplate)
@@ -199,6 +255,9 @@ func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 			s.store.AttachVolume(sbID, v.Name, v.Target, v.ReadOnly)
 		}
 
+		// Persist Firecracker VM state
+		s.saveVMState(sbID, info.EngineID)
+
 		writeJSON(w, 201, sb)
 	default:
 		errResp(w, 405, "method not allowed")
@@ -294,6 +353,7 @@ func (s *Server) handleSandboxStop(w http.ResponseWriter, r *http.Request, id st
 	}
 	s.proxy.StopAll(sb.ID)
 	s.store.StopSandbox(id)
+	s.saveVMState(id, sb.EngineID) // persist snapshot paths
 	updated, _ := s.store.GetSandbox(id)
 	writeJSON(w, 200, updated)
 }
@@ -320,6 +380,7 @@ func (s *Server) handleSandboxStart(w http.ResponseWriter, r *http.Request, id s
 	} else {
 		s.store.UpdateSandboxStatus(id, "running")
 	}
+	s.saveVMState(id, sb.EngineID) // persist updated state
 	updated, _ := s.store.GetSandbox(id)
 	writeJSON(w, 200, updated)
 }

@@ -47,6 +47,12 @@ type TerminalConn interface {
 	Resize(rows, cols int) error
 }
 
+// VMStateProvider is optionally implemented by engines that persist VM state.
+type VMStateProvider interface {
+	VMState(id string) map[string]interface{}
+	RestoreVM(id, name, status string, state map[string]interface{})
+}
+
 // Engine is the sandbox lifecycle interface.
 type Engine interface {
 	Create(ctx context.Context, spec SandboxSpec) (SandboxInfo, error)
