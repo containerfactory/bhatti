@@ -12,6 +12,9 @@ import (
 	"github.com/sahilshubham/bhatti/pkg/agent/proto"
 )
 
+// TCP port constants reuse the vsock port numbers for simplicity.
+// The agent listens on both vsock AND TCP on the same port numbers.
+
 func main() {
 	if os.Getenv("BHATTI_AGENT_TEST") == "1" {
 		runTestMode()
@@ -40,26 +43,40 @@ func main() {
 	setupNetworking()
 	installSignalHandlers()
 
+	// Listen on vsock (works for cold boot, broken after snapshot/restore).
 	lnControl, err := listenVsock(proto.VsockPortControl)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "bhatti-agent: vsock control: %v\n", err)
-		os.Exit(1)
+		// Non-fatal: TCP listeners below are the primary channel.
+	} else {
+		go acceptLoop(lnControl, handleControlConnection)
 	}
 	lnForward, err := listenVsock(proto.VsockPortForward)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "bhatti-agent: vsock forward: %v\n", err)
-		os.Exit(1)
+	} else {
+		go acceptLoop(lnForward, handleForwardConnection)
+	}
+
+	// Listen on TCP (survives snapshot/restore since virtio-net is reliable).
+	// The guest IP is configured by the kernel's ip= cmdline parameter
+	// before init runs, so the interface is already up.
+	tcpControl, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", proto.VsockPortControl))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bhatti-agent: tcp control: %v\n", err)
+	} else {
+		go acceptLoop(tcpControl, handleControlConnection)
+	}
+	tcpForward, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", proto.VsockPortForward))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bhatti-agent: tcp forward: %v\n", err)
+	} else {
+		go acceptLoop(tcpForward, handleForwardConnection)
 	}
 
 	fmt.Fprintln(os.Stderr, "bhatti-agent: ready")
-	go acceptLoop(lnControl, handleControlConnection)
-	go acceptLoop(lnForward, handleForwardConnection)
 
-	// PID 1 must never exit. Block forever.
-	// Orphan reaping is handled by the SIGCHLD handler in installSignalHandlers.
-	// We do NOT call Wait4(-1) here because that races with exec.Command.Wait()
-	// in the handler goroutines — if we reap a child that Wait() is waiting for,
-	// Wait() gets an error and we report a wrong exit code.
+	// PID 1 must never exit.
 	select {}
 }
 
@@ -74,7 +91,6 @@ func acceptLoop(ln net.Listener, handler func(net.Conn)) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "bhatti-agent: accept: %v\n", err)
 			continue
 		}
 		go handler(conn)

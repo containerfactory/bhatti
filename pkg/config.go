@@ -19,6 +19,11 @@ type Config struct {
 	Listen    string `yaml:"listen"`     // e.g. ":8080"
 	AuthToken string `yaml:"auth_token"` // bearer token
 	DataDir   string `yaml:"data_dir"`   // defaults to ~/.bhatti
+
+	// Firecracker-specific (ignored when engine=docker)
+	FirecrackerBin    string `yaml:"firecracker_bin"`    // path to firecracker binary
+	FirecrackerKernel string `yaml:"firecracker_kernel"` // path to vmlinux
+	FirecrackerRootfs string `yaml:"firecracker_rootfs"` // path to base rootfs.ext4
 }
 
 // DefaultDataDir returns ~/.bhatti.

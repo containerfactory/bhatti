@@ -14,7 +14,7 @@ to run Firecracker microVM sandboxes.
 ## 1. Prerequisites
 
 ```bash
-# Verify KVM support (required for Firecracker)
+  Verify KVM support (required for Firecracker)
 ls -la /dev/kvm
 # If missing:
 sudo modprobe kvm

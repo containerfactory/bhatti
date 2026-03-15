@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/sahilshubham/bhatti/pkg"
+	"github.com/sahilshubham/bhatti/pkg/engine"
 	"github.com/sahilshubham/bhatti/pkg/engine/docker"
 	"github.com/sahilshubham/bhatti/pkg/server"
 	"github.com/sahilshubham/bhatti/pkg/store"
@@ -41,7 +42,15 @@ func main() {
 	defer st.Close()
 
 	// Create engine
-	eng, err := docker.New()
+	var eng engine.Engine
+	switch cfg.Engine {
+	case "firecracker":
+		eng, err = newFirecrackerEngine(cfg)
+	case "docker", "":
+		eng, err = docker.New()
+	default:
+		log.Fatalf("unknown engine: %s", cfg.Engine)
+	}
 	if err != nil {
 		log.Fatal(err)
 	}

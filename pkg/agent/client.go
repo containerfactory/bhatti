@@ -18,13 +18,15 @@ import (
 
 // AgentClient communicates with the guest agent running inside a microVM.
 //
-// In production, vsockPath is the Firecracker vsock UDS and the client
-// performs the CONNECT/OK handshake. In tests, controlSock and forwardSock
-// are plain Unix sockets and no handshake is needed.
+// Three transport modes:
+//   - Vsock: connects through Firecracker's vsock UDS with CONNECT handshake
+//   - TCP: connects directly to the guest's IP over the TAP network
+//   - Test: connects to plain Unix sockets (no handshake)
 type AgentClient struct {
-	controlSock string
+	controlSock string // vsock UDS path or Unix socket path
 	forwardSock string
 	isVsock     bool
+	tcpAddr     string // guest IP for TCP mode (e.g. "172.16.0.2")
 }
 
 // NewVsockClient creates a client that connects through a Firecracker vsock UDS.
@@ -36,18 +38,29 @@ func NewVsockClient(vsockPath string) *AgentClient {
 	}
 }
 
+// NewTCPClient creates a client that connects to the agent via TCP over the
+// TAP network. Used after snapshot/resume since virtio-net survives but
+// vsock does not.
+func NewTCPClient(guestIP string) *AgentClient {
+	return &AgentClient{
+		tcpAddr: guestIP,
+	}
+}
+
 // NewTestClient creates a client that connects to the agent's test-mode
 // Unix sockets directly (no vsock handshake).
 func NewTestClient(controlSock, forwardSock string) *AgentClient {
 	return &AgentClient{
 		controlSock: controlSock,
 		forwardSock: forwardSock,
-		isVsock:     false,
 	}
 }
 
 // dialControl opens a connection to the control channel (port 1024).
 func (c *AgentClient) dialControl() (net.Conn, error) {
+	if c.tcpAddr != "" {
+		return net.Dial("tcp", net.JoinHostPort(c.tcpAddr, fmt.Sprint(proto.VsockPortControl)))
+	}
 	if c.isVsock {
 		return c.dialVsockPort(c.controlSock, proto.VsockPortControl)
 	}
@@ -56,6 +69,9 @@ func (c *AgentClient) dialControl() (net.Conn, error) {
 
 // dialForward opens a connection to the forward channel (port 1025).
 func (c *AgentClient) dialForward() (net.Conn, error) {
+	if c.tcpAddr != "" {
+		return net.Dial("tcp", net.JoinHostPort(c.tcpAddr, fmt.Sprint(proto.VsockPortForward)))
+	}
 	if c.isVsock {
 		return c.dialVsockPort(c.forwardSock, proto.VsockPortForward)
 	}
