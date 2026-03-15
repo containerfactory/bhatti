@@ -1,4 +1,5 @@
 /bhatti
+bin/
 *.db
 .build-ctx/
 .DS_Store

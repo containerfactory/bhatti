@@ -1,0 +1,38 @@
+//go:build linux
+
+package main
+
+import (
+	"fmt"
+	"net"
+	"os"
+)
+
+func runTestMode() {
+	controlSock := os.Getenv("BHATTI_AGENT_SOCK")
+	forwardSock := os.Getenv("BHATTI_AGENT_FWD_SOCK")
+	if controlSock == "" || forwardSock == "" {
+		fmt.Fprintln(os.Stderr, "BHATTI_AGENT_SOCK and BHATTI_AGENT_FWD_SOCK required")
+		os.Exit(1)
+	}
+
+	os.Remove(controlSock)
+	os.Remove(forwardSock)
+
+	lnControl, err := net.Listen("unix", controlSock)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "listen control: %v\n", err)
+		os.Exit(1)
+	}
+	lnForward, err := net.Listen("unix", forwardSock)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "listen forward: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Fprintln(os.Stderr, "bhatti-agent: test mode ready")
+	go acceptLoop(lnControl, handleControlConnection)
+	go acceptLoop(lnForward, handleForwardConnection)
+
+	select {} // block forever
+}
