@@ -85,11 +85,11 @@ On your Mac (or any machine with Go):
 cd /path/to/forge
 GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build \
     -ldflags='-s -w' \
-    -o bin/bhatti-agent-linux-arm64 \
-    ./cmd/bhatti-agent
+    -o bin/lohar-linux-arm64 \
+    ./cmd/lohar
 
 # Copy to Pi
-scp bin/bhatti-agent-linux-arm64 user@<PI_IP>:/var/lib/bhatti/bhatti-agent
+scp bin/lohar-linux-arm64 user@<PI_IP>:/var/lib/bhatti/lohar
 ```
 
 ## 6. Build Base Rootfs
@@ -106,7 +106,7 @@ sudo apt-get update && sudo apt-get install -y debootstrap
 #   scp -r sandbox/ user@<PI_IP>:/var/lib/bhatti/sandbox/
 
 # Run the build
-sudo /var/lib/bhatti/build-rootfs.sh /var/lib/bhatti/bhatti-agent
+sudo /var/lib/bhatti/build-rootfs.sh /var/lib/bhatti/lohar
 ```
 
 The script creates `/var/lib/bhatti/images/rootfs-base-arm64.ext4` containing:
@@ -118,7 +118,7 @@ The script creates `/var/lib/bhatti/images/rootfs-base-arm64.ext4` containing:
 - zsh plugins (zinit, syntax-highlighting, autosuggestions, zsh-z)
 - User `lohar` with sudo, zsh shell
 - `/workspace` directory for project files
-- `bhatti-agent` at `/usr/local/bin/bhatti-agent` (VM init process)
+- `lohar` at `/usr/local/bin/lohar` (VM init process)
 - Static DNS (1.1.1.1, 8.8.8.8)
 
 ## 7. Smoke Test — Boot a VM
@@ -147,7 +147,7 @@ curl --unix-socket /tmp/fc-test.sock -s -X PUT \
   http://localhost/boot-source \
   -d '{
     "kernel_image_path": "/var/lib/bhatti/images/vmlinux-arm64",
-    "boot_args": "console=ttyS0 reboot=k panic=1 pci=off init=/usr/local/bin/bhatti-agent quiet loglevel=0"
+    "boot_args": "console=ttyS0 reboot=k panic=1 pci=off init=/usr/local/bin/lohar quiet loglevel=0"
   }'
 
 curl --unix-socket /tmp/fc-test.sock -s -X PUT \
@@ -196,7 +196,7 @@ On some kernels you may need `kvm` in `/etc/modules-load.d/`.
 **VM doesn't boot / kernel panic** — Check Firecracker's stderr output.
 Common causes:
 - Wrong kernel architecture (needs aarch64 vmlinux)
-- Rootfs doesn't have the agent at `/usr/local/bin/bhatti-agent`
+- Rootfs doesn't have the agent at `/usr/local/bin/lohar`
 - Rootfs image is corrupt (re-run build-rootfs.sh)
 
 **"CONNECT 1024" hangs** — The agent hasn't started yet. Increase the
@@ -219,7 +219,7 @@ After setup, the Pi looks like:
   jailer               — (optional) sandboxing for firecracker itself
 
 /var/lib/bhatti/
-  bhatti-agent          — guest agent binary (copied into rootfs)
+  lohar          — guest agent binary (copied into rootfs)
   images/
     vmlinux-arm64       — Linux kernel (~8MB)
     rootfs-base-arm64.ext4  — base rootfs (~2GB)

@@ -15,14 +15,14 @@ import (
 	"time"
 )
 
-// startTestAgent starts the bhatti-agent binary in test mode.
-// The BHATTI_AGENT_BIN env var must point to the compiled agent binary.
+// startTestAgent starts the lohar binary in test mode.
+// The LOHAR_BIN env var must point to the compiled agent binary.
 func startTestAgent(t *testing.T) (controlSock, forwardSock string, cleanup func()) {
 	t.Helper()
 
-	agentBin := os.Getenv("BHATTI_AGENT_BIN")
+	agentBin := os.Getenv("LOHAR_BIN")
 	if agentBin == "" {
-		t.Skip("BHATTI_AGENT_BIN not set — skipping agent client test")
+		t.Skip("LOHAR_BIN not set — skipping agent client test")
 	}
 
 	dir := t.TempDir()
@@ -31,9 +31,9 @@ func startTestAgent(t *testing.T) (controlSock, forwardSock string, cleanup func
 
 	cmd := exec.Command(agentBin)
 	cmd.Env = append(os.Environ(),
-		"BHATTI_AGENT_TEST=1",
-		"BHATTI_AGENT_SOCK="+controlSock,
-		"BHATTI_AGENT_FWD_SOCK="+forwardSock,
+		"LOHAR_TEST=1",
+		"LOHAR_SOCK="+controlSock,
+		"LOHAR_FWD_SOCK="+forwardSock,
 	)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {

@@ -187,7 +187,7 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (engine.Sa
 	// Format: ip=<client-ip>::<gateway>:<netmask>::<device>:off:<dns1>:<dns2>:
 	// This configures eth0 before init runs, so the agent's TCP listener works immediately.
 	bootArgs := fmt.Sprintf(
-		"console=ttyS0 reboot=k panic=1 pci=off init=/usr/local/bin/bhatti-agent quiet loglevel=0 ip=%s::%s:255.255.255.252::eth0:off:1.1.1.1:8.8.8.8:",
+		"console=ttyS0 reboot=k panic=1 pci=off init=/usr/local/bin/lohar quiet loglevel=0 ip=%s::%s:255.255.255.252::eth0:off:1.1.1.1:8.8.8.8:",
 		guestIP, s.HostIP)
 
 	if err := fcPut(client, "/boot-source", fmt.Sprintf(

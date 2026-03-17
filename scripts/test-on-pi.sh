@@ -20,23 +20,23 @@ TEST_FILTER="${2:-}"
 echo "==> Building agent binary..."
 GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build \
     -ldflags='-s -w' \
-    -o bin/bhatti-agent-linux-arm64 \
-    ./cmd/bhatti-agent
+    -o bin/lohar-linux-arm64 \
+    ./cmd/lohar
 
 run_agent_tests() {
     echo "==> Compiling agent test binary..."
     GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go test -c \
-        -o bin/bhatti-agent-test-linux-arm64 ./cmd/bhatti-agent
+        -o bin/lohar-test-linux-arm64 ./cmd/lohar
 
     echo "==> Uploading to $PI_HOST..."
     ssh "$PI_HOST" "mkdir -p $PI_DIR"
-    scp -q bin/bhatti-agent-test-linux-arm64 "$PI_HOST:$PI_DIR/"
+    scp -q bin/lohar-test-linux-arm64 "$PI_HOST:$PI_DIR/"
 
     EXTRA=""
     if [[ -n "$TEST_FILTER" ]]; then EXTRA="-test.run=$TEST_FILTER"; fi
 
     echo "==> Running agent tests on Pi..."
-    ssh "$PI_HOST" "cd $PI_DIR && ./bhatti-agent-test-linux-arm64 -test.v -test.timeout=60s $EXTRA"
+    ssh "$PI_HOST" "cd $PI_DIR && ./lohar-test-linux-arm64 -test.v -test.timeout=60s $EXTRA"
 }
 
 run_client_tests() {
@@ -46,13 +46,13 @@ run_client_tests() {
 
     echo "==> Uploading to $PI_HOST..."
     ssh "$PI_HOST" "mkdir -p $PI_DIR"
-    scp -q bin/bhatti-agent-linux-arm64 bin/bhatti-client-test-linux-arm64 "$PI_HOST:$PI_DIR/"
+    scp -q bin/lohar-linux-arm64 bin/bhatti-client-test-linux-arm64 "$PI_HOST:$PI_DIR/"
 
     EXTRA=""
     if [[ -n "$TEST_FILTER" ]]; then EXTRA="-test.run=$TEST_FILTER"; fi
 
     echo "==> Running client tests on Pi..."
-    ssh "$PI_HOST" "cd $PI_DIR && BHATTI_AGENT_BIN=$PI_DIR/bhatti-agent-linux-arm64 ./bhatti-client-test-linux-arm64 -test.v -test.timeout=60s $EXTRA"
+    ssh "$PI_HOST" "cd $PI_DIR && LOHAR_BIN=$PI_DIR/lohar-linux-arm64 ./bhatti-client-test-linux-arm64 -test.v -test.timeout=60s $EXTRA"
 }
 
 case "$SUITE" in

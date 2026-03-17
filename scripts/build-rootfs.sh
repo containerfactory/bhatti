@@ -4,7 +4,7 @@
 # Run on an arm64 Linux host (Pi, Graviton, etc.) as root.
 #
 # Usage:
-#   sudo ./build-rootfs.sh /path/to/bhatti-agent-binary
+#   sudo ./build-rootfs.sh /path/to/lohar-binary
 #
 # Output:
 #   /var/lib/bhatti/images/rootfs-base-arm64.ext4  (2GB ext4)
@@ -26,7 +26,7 @@ fi
 
 if [[ -z "$AGENT" || ! -f "$AGENT" ]]; then
     echo "error: agent binary not found: $AGENT" >&2
-    echo "usage: sudo $0 /path/to/bhatti-agent" >&2
+    echo "usage: sudo $0 /path/to/lohar" >&2
     exit 1
 fi
 
@@ -143,8 +143,8 @@ echo "==> Installing agent and workspace..."
 mkdir -p "$MOUNT/workspace"
 chown 1000:1000 "$MOUNT/workspace"
 
-cp "$AGENT" "$MOUNT/usr/local/bin/bhatti-agent"
-chmod 755 "$MOUNT/usr/local/bin/bhatti-agent"
+cp "$AGENT" "$MOUNT/usr/local/bin/lohar"
+chmod 755 "$MOUNT/usr/local/bin/lohar"
 
 # Static DNS for the guest VM (no NetworkManager).
 cat > "$MOUNT/etc/resolv.conf" << 'DNSEOF'

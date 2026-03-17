@@ -16,7 +16,7 @@ import (
 // The agent listens on both vsock AND TCP on the same port numbers.
 
 func main() {
-	if os.Getenv("BHATTI_AGENT_TEST") == "1" {
+	if os.Getenv("LOHAR_TEST") == "1" {
 		runTestMode()
 		return
 	}
@@ -47,14 +47,14 @@ func main() {
 	// Listen on vsock (works for cold boot, broken after snapshot/restore).
 	lnControl, err := listenVsock(proto.VsockPortControl)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "bhatti-agent: vsock control: %v\n", err)
+		fmt.Fprintf(os.Stderr, "lohar: vsock control: %v\n", err)
 		// Non-fatal: TCP listeners below are the primary channel.
 	} else {
 		go acceptLoop(lnControl, handleControlConnection)
 	}
 	lnForward, err := listenVsock(proto.VsockPortForward)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "bhatti-agent: vsock forward: %v\n", err)
+		fmt.Fprintf(os.Stderr, "lohar: vsock forward: %v\n", err)
 	} else {
 		go acceptLoop(lnForward, handleForwardConnection)
 	}
@@ -64,18 +64,18 @@ func main() {
 	// before init runs, so the interface is already up.
 	tcpControl, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", proto.VsockPortControl))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "bhatti-agent: tcp control: %v\n", err)
+		fmt.Fprintf(os.Stderr, "lohar: tcp control: %v\n", err)
 	} else {
 		go acceptLoop(tcpControl, handleControlConnection)
 	}
 	tcpForward, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", proto.VsockPortForward))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "bhatti-agent: tcp forward: %v\n", err)
+		fmt.Fprintf(os.Stderr, "lohar: tcp forward: %v\n", err)
 	} else {
 		go acceptLoop(tcpForward, handleForwardConnection)
 	}
 
-	fmt.Fprintln(os.Stderr, "bhatti-agent: ready")
+	fmt.Fprintln(os.Stderr, "lohar: ready")
 
 	// PID 1 must never exit.
 	select {}
@@ -84,7 +84,7 @@ func main() {
 func mustMount(source, target, fstype string, flags uintptr, data string) {
 	os.MkdirAll(target, 0755)
 	if err := syscall.Mount(source, target, fstype, flags, data); err != nil {
-		fmt.Fprintf(os.Stderr, "bhatti-agent: mount %s on %s: %v\n", source, target, err)
+		fmt.Fprintf(os.Stderr, "lohar: mount %s on %s: %v\n", source, target, err)
 	}
 }
 
@@ -93,7 +93,7 @@ func ensureResolvConf() {
 	// Remove any broken symlink (e.g. from systemd-resolved stub)
 	os.Remove(path)
 	if err := os.WriteFile(path, []byte("nameserver 1.1.1.1\nnameserver 8.8.8.8\n"), 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "bhatti-agent: write resolv.conf: %v\n", err)
+		fmt.Fprintf(os.Stderr, "lohar: write resolv.conf: %v\n", err)
 	}
 }
 

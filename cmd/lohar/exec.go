@@ -155,5 +155,5 @@ func buildEnv(env map[string]string) []string {
 
 // logf logs to stderr with a prefix.
 func logf(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "bhatti-agent: "+format+"\n", args...)
+	fmt.Fprintf(os.Stderr, "lohar: "+format+"\n", args...)
 }
