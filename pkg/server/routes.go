@@ -162,9 +162,13 @@ func (s *Server) handleTemplate(w http.ResponseWriter, r *http.Request) {
 
 type createSandboxReq struct {
 	Name       string               `json:"name"`
-	TemplateID string               `json:"template_id"`
-	Volumes    []engine.VolumeMount `json:"volumes,omitempty"`
+	TemplateID string               `json:"template_id,omitempty"`
+	CPUs       float64              `json:"cpus,omitempty"`
+	MemoryMB   int                  `json:"memory_mb,omitempty"`
 	Env        map[string]string    `json:"env,omitempty"`
+	Init       string               `json:"init,omitempty"`
+	NewVolumes []engine.VolumeSpec  `json:"new_volumes,omitempty"`
+	Volumes    []engine.VolumeMount `json:"volumes,omitempty"`
 }
 
 func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
@@ -185,72 +189,97 @@ func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 			errResp(w, 400, "invalid json: "+err.Error())
 			return
 		}
-		if req.TemplateID == "" {
-			errResp(w, 400, "template_id required")
-			return
-		}
 
-		tmpl, err := s.store.GetTemplate(req.TemplateID)
-		if err != nil {
-			errResp(w, 404, "template not found")
-			return
-		}
+		var spec engine.SandboxSpec
+		var templateID string
+		var volumes []engine.VolumeMount
 
-		name := req.Name
-		if name == "" {
-			name = tmpl.Name + "-" + genID()[:6]
-		}
-
-		// Resolve volumes: use request volumes if provided, else template defaults
-		volumes := req.Volumes
-		if len(volumes) == 0 && len(tmpl.Mounts) > 0 {
-			for _, m := range tmpl.Mounts {
-				volName := m.VolumeName
-				if volName == "" {
-					volName = "bhatti-" + name + "-workspace"
-				}
-				if m.AutoCreate {
-					s.store.CreateVolume(volName) // idempotent
-				}
-				volumes = append(volumes, engine.VolumeMount{
-					Name: volName, Target: m.Target, ReadOnly: m.ReadOnly,
-				})
-			}
-		}
-
-		// Resolve secrets from template
-		secretEnv := make(map[string]string)
-		secretFiles := make(map[string]engine.FileSpec)
-		for _, secretName := range tmpl.Secrets {
-			encrypted, err := s.store.GetSecretValue(secretName)
+		if req.TemplateID != "" {
+			// --- Template-based creation (existing behavior) ---
+			tmpl, err := s.store.GetTemplate(req.TemplateID)
 			if err != nil {
-				errResp(w, 400, fmt.Sprintf("secret %q not found", secretName))
+				errResp(w, 404, "template not found")
 				return
 			}
-			// Secrets are stored as plaintext bytes for now
-			// (age encryption is applied by the CLI before storing)
-			secretEnv[secretName] = string(encrypted)
-		}
+			templateID = tmpl.ID
 
-		// Merge request env overrides
-		env := make(map[string]string)
-		for k, v := range secretEnv {
-			env[k] = v
-		}
-		for k, v := range req.Env {
-			env[k] = v
-		}
+			name := req.Name
+			if name == "" {
+				name = tmpl.Name + "-" + genID()[:6]
+			}
 
-		spec := engine.SandboxSpec{
-			Name:     name,
-			Image:    tmpl.Image,
-			CPUs:     tmpl.CPUs,
-			MemoryMB: tmpl.MemoryMB,
-			Labels:   tmpl.Labels,
-			UserData: tmpl.UserData,
-			Env:      env,
-			Files:    secretFiles,
-			Volumes:  volumes,
+			// Resolve volumes: use request volumes if provided, else template defaults
+			volumes = req.Volumes
+			if len(volumes) == 0 && len(tmpl.Mounts) > 0 {
+				for _, m := range tmpl.Mounts {
+					volName := m.VolumeName
+					if volName == "" {
+						volName = "bhatti-" + name + "-workspace"
+					}
+					if m.AutoCreate {
+						s.store.CreateVolume(volName) // idempotent
+					}
+					volumes = append(volumes, engine.VolumeMount{
+						Name: volName, Target: m.Target, ReadOnly: m.ReadOnly,
+					})
+				}
+			}
+
+			// Resolve secrets from template
+			secretEnv := make(map[string]string)
+			secretFiles := make(map[string]engine.FileSpec)
+			for _, secretName := range tmpl.Secrets {
+				encrypted, err := s.store.GetSecretValue(secretName)
+				if err != nil {
+					errResp(w, 400, fmt.Sprintf("secret %q not found", secretName))
+					return
+				}
+				secretEnv[secretName] = string(encrypted)
+			}
+
+			// Merge request env overrides
+			env := make(map[string]string)
+			for k, v := range secretEnv {
+				env[k] = v
+			}
+			for k, v := range req.Env {
+				env[k] = v
+			}
+
+			spec = engine.SandboxSpec{
+				Name:     name,
+				Image:    tmpl.Image,
+				CPUs:     tmpl.CPUs,
+				MemoryMB: tmpl.MemoryMB,
+				Labels:   tmpl.Labels,
+				UserData: tmpl.UserData,
+				Env:      env,
+				Files:    secretFiles,
+				Volumes:  volumes,
+			}
+		} else {
+			// --- Direct creation (no template) ---
+			spec = engine.SandboxSpec{
+				Name:       req.Name,
+				CPUs:       req.CPUs,
+				MemoryMB:   req.MemoryMB,
+				Env:        req.Env,
+				Init:       req.Init,
+				NewVolumes: req.NewVolumes,
+				Volumes:    req.Volumes,
+			}
+			volumes = req.Volumes
+
+			// Apply defaults
+			if spec.CPUs == 0 {
+				spec.CPUs = 1
+			}
+			if spec.MemoryMB == 0 {
+				spec.MemoryMB = 512
+			}
+			if spec.Name == "" {
+				spec.Name = "sandbox-" + genID()[:6]
+			}
 		}
 
 		info, err := s.engine.Create(r.Context(), spec)
@@ -262,8 +291,8 @@ func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 		sbID := genID()
 		sb := store.Sandbox{
 			ID:         sbID,
-			Name:       name,
-			TemplateID: tmpl.ID,
+			Name:       spec.Name,
+			TemplateID: templateID,
 			EngineID:   info.EngineID,
 			Status:     info.Status,
 			IP:         info.IP,
@@ -271,7 +300,6 @@ func (s *Server) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 			CreatedAt:  time.Now(),
 		}
 		if err := s.store.CreateSandbox(sb); err != nil {
-			// try to clean up container
 			s.engine.Destroy(r.Context(), info.EngineID)
 			errResp(w, 500, "store failed: "+err.Error())
 			return

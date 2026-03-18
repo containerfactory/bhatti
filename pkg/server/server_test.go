@@ -389,7 +389,7 @@ func TestSandboxLifecycle(t *testing.T) {
 	}
 }
 
-func TestSandboxCreateRequiresTemplate(t *testing.T) {
+func TestSandboxCreateBadTemplate(t *testing.T) {
 	_, ts := setup(t)
 
 	resp := doReq(t, ts, "POST", "/sandboxes", map[string]any{
@@ -397,6 +397,102 @@ func TestSandboxCreateRequiresTemplate(t *testing.T) {
 	})
 	if resp.StatusCode != 404 {
 		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestCreateWithoutTemplate(t *testing.T) {
+	_, ts := setup(t)
+	name := uniqueName(t, "notempl")
+
+	resp := doReq(t, ts, "POST", "/sandboxes", map[string]any{
+		"name":      name,
+		"cpus":      2,
+		"memory_mb": 256,
+	})
+	if resp.StatusCode != 201 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 201, got %d: %s", resp.StatusCode, body)
+	}
+	var sb store.Sandbox
+	decodeJSON(t, resp, &sb)
+	t.Cleanup(func() { doReq(t, ts, "DELETE", "/sandboxes/"+sb.ID, nil) })
+
+	if sb.Name != name {
+		t.Errorf("name: %q, want %q", sb.Name, name)
+	}
+	if sb.TemplateID != "" {
+		t.Errorf("template_id: %q, want empty", sb.TemplateID)
+	}
+	if sb.Status != "running" {
+		t.Errorf("status: %q, want running", sb.Status)
+	}
+
+	// Exec should work
+	resp = doReq(t, ts, "POST", "/sandboxes/"+sb.ID+"/exec", map[string]any{
+		"cmd": []string{"echo", "hello"},
+	})
+	var result engine.ExecResult
+	decodeJSON(t, resp, &result)
+	if strings.TrimSpace(result.Stdout) != "hello" {
+		t.Errorf("exec: %q, want 'hello'", result.Stdout)
+	}
+}
+
+func TestCreateWithoutTemplateDefaults(t *testing.T) {
+	_, ts := setup(t)
+
+	// Minimal request — only name
+	resp := doReq(t, ts, "POST", "/sandboxes", map[string]any{
+		"name": uniqueName(t, "defaults"),
+	})
+	if resp.StatusCode != 201 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 201, got %d: %s", resp.StatusCode, body)
+	}
+	var sb store.Sandbox
+	decodeJSON(t, resp, &sb)
+	t.Cleanup(func() { doReq(t, ts, "DELETE", "/sandboxes/"+sb.ID, nil) })
+
+	if sb.Status != "running" {
+		t.Errorf("status: %q, want running", sb.Status)
+	}
+}
+
+func TestCreateWithoutTemplateAutoName(t *testing.T) {
+	_, ts := setup(t)
+
+	// Empty body — should auto-generate name
+	resp := doReq(t, ts, "POST", "/sandboxes", map[string]any{})
+	if resp.StatusCode != 201 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 201, got %d: %s", resp.StatusCode, body)
+	}
+	var sb store.Sandbox
+	decodeJSON(t, resp, &sb)
+	t.Cleanup(func() { doReq(t, ts, "DELETE", "/sandboxes/"+sb.ID, nil) })
+
+	if !strings.HasPrefix(sb.Name, "sandbox-") {
+		t.Errorf("auto name: %q, want sandbox-* prefix", sb.Name)
+	}
+}
+
+func TestCreateWithTemplateStillWorks(t *testing.T) {
+	_, ts := setup(t)
+	name := uniqueName(t, "tmplworks")
+
+	// Existing template-based flow should be unaffected
+	_, sb := createTemplateAndSandbox(t, ts, name, nil)
+	if sb.Name != name || sb.Status != "running" || sb.TemplateID == "" {
+		t.Errorf("template sandbox: name=%q status=%q tmpl=%q", sb.Name, sb.Status, sb.TemplateID)
+	}
+
+	resp := doReq(t, ts, "POST", "/sandboxes/"+sb.ID+"/exec", map[string]any{
+		"cmd": []string{"echo", "template works"},
+	})
+	var result engine.ExecResult
+	decodeJSON(t, resp, &result)
+	if strings.TrimSpace(result.Stdout) != "template works" {
+		t.Errorf("exec: %q", result.Stdout)
 	}
 }
 
