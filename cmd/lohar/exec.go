@@ -10,7 +10,7 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/sahilshubham/bhatti/pkg/agent/proto"
+	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
 )
 
 type frameMsg struct {

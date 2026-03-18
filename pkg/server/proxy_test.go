@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahilshubham/bhatti/pkg/engine"
+	"github.com/sahil-shubham/bhatti/pkg/engine"
 )
 
 // mockEngine implements engine.Engine for proxy tests.

@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/sahilshubham/bhatti/pkg/agent/proto"
+	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
 )
 
 func handleFileRead(conn net.Conn, payload []byte) {

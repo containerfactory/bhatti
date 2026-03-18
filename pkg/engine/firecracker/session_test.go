@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahilshubham/bhatti/pkg/agent/proto"
-	"github.com/sahilshubham/bhatti/pkg/engine"
+	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
+	"github.com/sahil-shubham/bhatti/pkg/engine"
 )
 
 // readTermOutput reads from a terminal until timeout or match string is found.

@@ -16,7 +16,7 @@ import (
 	"github.com/gorilla/websocket"
 	"golang.org/x/term"
 
-	"github.com/sahilshubham/bhatti/pkg"
+	"github.com/sahil-shubham/bhatti/pkg"
 )
 
 var (

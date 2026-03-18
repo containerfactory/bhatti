@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sahilshubham/bhatti/pkg/agent/proto"
-	"github.com/sahilshubham/bhatti/pkg/engine"
+	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
+	"github.com/sahil-shubham/bhatti/pkg/engine"
 )
 
 // AgentClient communicates with the guest agent running inside a microVM.

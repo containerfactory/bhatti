@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"syscall"
 
-	"github.com/sahilshubham/bhatti/pkg/agent/proto"
+	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
 )
 
 // configEnv holds environment variables from the config drive, merged into

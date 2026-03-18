@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sahilshubham/bhatti/pkg/agent/proto"
+	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
 )
 
 // agentToken is set during boot from the config drive. Empty = no auth required.

@@ -5,8 +5,8 @@ package main
 import (
 	"fmt"
 
-	"github.com/sahilshubham/bhatti/pkg"
-	"github.com/sahilshubham/bhatti/pkg/engine"
+	"github.com/sahil-shubham/bhatti/pkg"
+	"github.com/sahil-shubham/bhatti/pkg/engine"
 )
 
 func newFirecrackerEngine(cfg *pkg.Config) (engine.Engine, error) {

@@ -3,9 +3,9 @@
 package main
 
 import (
-	"github.com/sahilshubham/bhatti/pkg"
-	"github.com/sahilshubham/bhatti/pkg/engine"
-	fc "github.com/sahilshubham/bhatti/pkg/engine/firecracker"
+	"github.com/sahil-shubham/bhatti/pkg"
+	"github.com/sahil-shubham/bhatti/pkg/engine"
+	fc "github.com/sahil-shubham/bhatti/pkg/engine/firecracker"
 )
 
 func newFirecrackerEngine(cfg *pkg.Config) (engine.Engine, error) {

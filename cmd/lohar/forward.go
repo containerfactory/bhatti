@@ -10,7 +10,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/sahilshubham/bhatti/pkg/agent/proto"
+	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
 )
 
 func handleForwardConnection(conn net.Conn) {

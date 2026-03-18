@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sahilshubham/bhatti/pkg/agent/proto"
-	"github.com/sahilshubham/bhatti/pkg/engine"
-	"github.com/sahilshubham/bhatti/pkg/store"
+	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
+	"github.com/sahil-shubham/bhatti/pkg/engine"
+	"github.com/sahil-shubham/bhatti/pkg/store"
 )
 
 // ThermalEngine is optionally implemented by engines that support thermal management.

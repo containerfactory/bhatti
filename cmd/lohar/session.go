@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sahilshubham/bhatti/pkg/agent/proto"
+	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
 )
 
 // Session represents a running or recently-completed exec session.

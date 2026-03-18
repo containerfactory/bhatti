@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahilshubham/bhatti/pkg/engine"
+	"github.com/sahil-shubham/bhatti/pkg/engine"
 )
 
 // These tests require root + Firecracker + kernel + rootfs on the Pi.

@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahilshubham/bhatti/pkg/agent/proto"
+	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
 )
 
 // startTestAgent starts the agent as a subprocess in test mode over Unix sockets.

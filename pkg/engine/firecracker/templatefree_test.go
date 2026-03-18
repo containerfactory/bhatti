@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sahilshubham/bhatti/pkg/engine"
+	"github.com/sahil-shubham/bhatti/pkg/engine"
 )
 
 func TestCreateWithoutTemplate(t *testing.T) {

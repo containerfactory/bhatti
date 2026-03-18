@@ -12,7 +12,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/sahilshubham/bhatti/pkg/agent/proto"
+	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
 )
 
 // PTY ioctl constants (same on amd64 and arm64 Linux).

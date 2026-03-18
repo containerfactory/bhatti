@@ -18,9 +18,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sahilshubham/bhatti/pkg/engine"
-	dockerengine "github.com/sahilshubham/bhatti/pkg/engine/docker"
-	"github.com/sahilshubham/bhatti/pkg/store"
+	"github.com/sahil-shubham/bhatti/pkg/engine"
+	dockerengine "github.com/sahil-shubham/bhatti/pkg/engine/docker"
+	"github.com/sahil-shubham/bhatti/pkg/store"
 )
 
 var (

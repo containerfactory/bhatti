@@ -1,4 +1,4 @@
-module github.com/sahilshubham/bhatti
+module github.com/sahil-shubham/bhatti
 
 go 1.25.6
 

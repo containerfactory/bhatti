@@ -10,11 +10,11 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/sahilshubham/bhatti/pkg"
-	"github.com/sahilshubham/bhatti/pkg/engine"
-	"github.com/sahilshubham/bhatti/pkg/engine/docker"
-	"github.com/sahilshubham/bhatti/pkg/server"
-	"github.com/sahilshubham/bhatti/pkg/store"
+	"github.com/sahil-shubham/bhatti/pkg"
+	"github.com/sahil-shubham/bhatti/pkg/engine"
+	"github.com/sahil-shubham/bhatti/pkg/engine/docker"
+	"github.com/sahil-shubham/bhatti/pkg/server"
+	"github.com/sahil-shubham/bhatti/pkg/store"
 )
 
 func main() {
