@@ -1,23 +1,41 @@
 #!/usr/bin/env bash
 #
 # Build the base rootfs ext4 image for Firecracker VMs.
-# Run on an arm64 Linux host (Pi, Graviton, etc.) as root.
+# Supports aarch64 and x86_64.
 #
 # Usage:
 #   sudo ./build-rootfs.sh /path/to/lohar-binary
 #
-# Output:
-#   /var/lib/bhatti/images/rootfs-base-arm64.ext4  (2GB ext4)
+# Environment:
+#   IMG — output path (default: auto-detected by arch)
 #
 # Requires: debootstrap, mkfs.ext4 (apt-get install debootstrap e2fsprogs)
 #
 set -euo pipefail
 
 SIZE_MB=2048
-IMG="${IMG:-/var/lib/bhatti/images/rootfs-base-arm64.ext4}"
 MOUNT="/mnt/bhatti-rootfs"
 AGENT="${1:-}"
 SANDBOX_DIR="${SANDBOX_DIR:-}"
+
+# Detect architecture
+HOST_ARCH=$(uname -m)
+case "$HOST_ARCH" in
+    aarch64)
+        DEB_ARCH="arm64"
+        MIRROR="http://ports.ubuntu.com/ubuntu-ports"
+        ;;
+    x86_64)
+        DEB_ARCH="amd64"
+        MIRROR="http://archive.ubuntu.com/ubuntu"
+        ;;
+    *)
+        echo "error: unsupported architecture $HOST_ARCH" >&2
+        exit 1
+        ;;
+esac
+
+IMG="${IMG:-/var/lib/bhatti/images/rootfs-base-${DEB_ARCH}.ext4}"
 
 if [[ $EUID -ne 0 ]]; then
     echo "error: must run as root (need mount/chroot)" >&2
@@ -52,9 +70,9 @@ mkdir -p "$MOUNT"
 mount "$IMG" "$MOUNT"
 
 # --- Bootstrap Ubuntu ---
-echo "==> Bootstrapping Ubuntu 24.04 (noble) arm64..."
+echo "==> Bootstrapping Ubuntu 24.04 (noble) ${DEB_ARCH}..."
 which debootstrap >/dev/null || apt-get install -y debootstrap
-debootstrap --arch=arm64 noble "$MOUNT" http://ports.ubuntu.com/ubuntu-ports
+debootstrap --arch="${DEB_ARCH}" noble "$MOUNT" "${MIRROR}"
 
 # DNS for chroot network access.
 cp /etc/resolv.conf "$MOUNT/etc/resolv.conf"

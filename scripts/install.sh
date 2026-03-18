@@ -48,6 +48,14 @@ if [[ ! -f "$REPO_ROOT/go.mod" ]]; then
     exit 1
 fi
 
+# Check required tools
+for cmd in curl mktemp; do
+    if ! command -v "$cmd" &>/dev/null; then
+        echo "error: $cmd is required but not installed" >&2
+        exit 1
+    fi
+done
+
 echo "==> Installing bhatti on $(hostname) ($HOST_ARCH)"
 echo "    repo: $REPO_ROOT"
 
@@ -135,7 +143,7 @@ fi
 
 if [[ ! -f "$DATA_DIR/config.yaml" ]]; then
     echo "==> Generating config..."
-    TOKEN=$(head -c 16 /dev/urandom | xxd -p)
+    TOKEN=$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')
     cat > "$DATA_DIR/config.yaml" << EOF
 engine: firecracker
 listen: :8080
