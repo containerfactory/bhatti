@@ -1,0 +1,16 @@
+[Unit]
+Description=Bhatti Sandbox Infrastructure
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/bhatti serve
+WorkingDirectory=/var/lib/bhatti
+Environment=HOME=/root
+Restart=always
+RestartSec=5
+ExecStopPost=/bin/sh -c 'ip -o link show type tun | grep tap | cut -d: -f2 | xargs -r -n1 ip link del'
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
