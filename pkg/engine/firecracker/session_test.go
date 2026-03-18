@@ -501,8 +501,17 @@ func TestScrollbackOverflow(t *testing.T) {
 		t.Log("✓ scrollback has most recent output")
 	}
 
-	// First lines should be evicted
+	// Scrollback must be exactly 64KB (ring buffer size)
+	if len(sb) != 65536 {
+		t.Errorf("scrollback size: %d, want exactly 65536", len(sb))
+	} else {
+		t.Log("✓ scrollback is exactly 64KB")
+	}
+
+	// First lines should be evicted (output was ~86KB: 1000 lines × ~86 chars)
 	if strings.Contains(sb, "L0001-") {
-		t.Log("⚠ L0001 still present — output may not have exceeded 64KB")
+		t.Error("L0001 should have been evicted from 64KB ring buffer")
+	} else {
+		t.Log("✓ oldest lines evicted from scrollback")
 	}
 }

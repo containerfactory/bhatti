@@ -4,9 +4,13 @@ package firecracker
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sahilshubham/bhatti/pkg/engine"
 )
 
 func TestPauseResume(t *testing.T) {
@@ -212,6 +216,7 @@ func TestActivityTracking(t *testing.T) {
 		activity.LastActivityUnix, activity.ActiveSessions, activity.AttachedSessions)
 
 	// Exec something to update activity
+	beforeExec := time.Now().Unix()
 	execWithTimeout(t, eng, info.ID, []string{"echo", "bump"})
 	time.Sleep(100 * time.Millisecond)
 
@@ -219,9 +224,14 @@ func TestActivityTracking(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Activity after exec: %v", err)
 	}
-	if activity2.LastActivityUnix < activity.LastActivityUnix {
-		t.Errorf("activity timestamp didn't advance: before=%d after=%d",
-			activity.LastActivityUnix, activity2.LastActivityUnix)
+
+	// Timestamp should be recent (within last 5 seconds)
+	now := time.Now().Unix()
+	if activity2.LastActivityUnix < beforeExec || activity2.LastActivityUnix > now {
+		t.Errorf("activity timestamp out of range: got %d, expected between %d and %d",
+			activity2.LastActivityUnix, beforeExec, now)
+	} else {
+		t.Logf("✓ activity timestamp is recent: %ds ago", now-activity2.LastActivityUnix)
 	}
 	t.Logf("after exec: last=%d active=%d attached=%d",
 		activity2.LastActivityUnix, activity2.ActiveSessions, activity2.AttachedSessions)
@@ -280,6 +290,64 @@ func TestAttachedSessionPreventsWarm(t *testing.T) {
 	// In production, the thermal manager would check AttachedSessions > 0
 	// and skip pausing. We verify the data is correct.
 	t.Logf("✓ attached=%d — thermal manager would skip pause", activity.AttachedSessions)
+}
+
+func TestExecOnWarmVMFails(t *testing.T) {
+	eng := testEngine(t)
+	ctx := context.Background()
+
+	info, err := eng.Create(ctx, testSpec("exec-warm"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer eng.Destroy(ctx, info.ID)
+
+	eng.Pause(ctx, info.ID)
+
+	start := time.Now()
+	_, err = eng.Exec(ctx, info.ID, []string{"echo", "hello"})
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Error("expected error exec on warm VM")
+	} else {
+		t.Logf("✓ exec on warm VM rejected in %v: %v", elapsed, err)
+	}
+	if elapsed > 1*time.Second {
+		t.Errorf("rejection too slow: %v (want <1s)", elapsed)
+	}
+
+	// Resume and verify it works
+	eng.Resume(ctx, info.ID)
+	r, err := execWithTimeout(t, eng, info.ID, []string{"echo", "back"})
+	if err != nil || !strings.Contains(r.Stdout, "back") {
+		t.Fatalf("exec after resume: err=%v out=%q", err, r.Stdout)
+	}
+	t.Log("✓ exec works after resume")
+}
+
+func TestExecOnColdVMFails(t *testing.T) {
+	eng := testEngine(t)
+	ctx := context.Background()
+
+	info, err := eng.Create(ctx, testSpec("exec-cold"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer eng.Destroy(ctx, info.ID)
+
+	eng.Stop(ctx, info.ID)
+
+	start := time.Now()
+	_, err = eng.Exec(ctx, info.ID, []string{"echo", "hello"})
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Error("expected error exec on cold VM")
+	} else {
+		t.Logf("✓ exec on cold VM rejected in %v: %v", elapsed, err)
+	}
+	if elapsed > 1*time.Second {
+		t.Errorf("rejection too slow: %v (want <1s)", elapsed)
+	}
 }
 
 // --- Performance benchmarks ---
@@ -387,6 +455,15 @@ func TestPerfSnapshotRestoreLatency(t *testing.T) {
 	eng.Stop(ctx, info.ID)
 	snapLatency := time.Since(start)
 
+	// Report snapshot file sizes
+	vm, _ := eng.getVM(info.ID)
+	if memInfo, err := os.Stat(vm.SnapMemPath); err == nil {
+		t.Logf("⏱ snapshot mem file: %dMB", memInfo.Size()/(1024*1024))
+	}
+	if vmInfo, err := os.Stat(vm.SnapVMPath); err == nil {
+		t.Logf("⏱ snapshot vm file:  %dKB", vmInfo.Size()/1024)
+	}
+
 	start = time.Now()
 	eng.Start(ctx, info.ID)
 	restoreLatency := time.Since(start)
@@ -399,6 +476,117 @@ func TestPerfSnapshotRestoreLatency(t *testing.T) {
 
 	t.Logf("⏱ snapshot latency: %v", snapLatency)
 	t.Logf("⏱ restore latency:  %v", restoreLatency)
+}
+
+func TestPerfExecThroughput(t *testing.T) {
+	eng := testEngine(t)
+	ctx := context.Background()
+
+	info, err := eng.Create(ctx, testSpec("perf-throughput"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer eng.Destroy(ctx, info.ID)
+
+	// Warm up
+	execWithTimeout(t, eng, info.ID, []string{"true"})
+
+	// Measure how many execs per second
+	const duration = 3 * time.Second
+	start := time.Now()
+	count := 0
+	for time.Since(start) < duration {
+		r, err := execWithTimeout(t, eng, info.ID, []string{"true"})
+		if err != nil || r.ExitCode != 0 {
+			t.Fatalf("exec %d failed: %v", count, err)
+		}
+		count++
+	}
+	elapsed := time.Since(start)
+	throughput := float64(count) / elapsed.Seconds()
+	t.Logf("⏱ exec throughput: %.1f execs/sec (%d in %v)", throughput, count, elapsed)
+}
+
+func TestPerfConcurrentExec(t *testing.T) {
+	eng := testEngine(t)
+	ctx := context.Background()
+
+	info, err := eng.Create(ctx, testSpec("perf-concurrent"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer eng.Destroy(ctx, info.ID)
+
+	// Warm up
+	execWithTimeout(t, eng, info.ID, []string{"true"})
+
+	// 10 concurrent execs
+	const N = 10
+	type result struct {
+		elapsed time.Duration
+		err     error
+	}
+	results := make(chan result, N)
+
+	start := time.Now()
+	for i := 0; i < N; i++ {
+		go func(i int) {
+			s := time.Now()
+			_, err := execWithTimeout(t, eng, info.ID, []string{"echo", "concurrent"})
+			results <- result{time.Since(s), err}
+		}(i)
+	}
+
+	var maxLatency time.Duration
+	var errors int
+	for i := 0; i < N; i++ {
+		r := <-results
+		if r.err != nil {
+			errors++
+		}
+		if r.elapsed > maxLatency {
+			maxLatency = r.elapsed
+		}
+	}
+	totalElapsed := time.Since(start)
+
+	t.Logf("⏱ %d concurrent execs: total=%v max_latency=%v errors=%d",
+		N, totalElapsed, maxLatency, errors)
+	if errors > 0 {
+		t.Errorf("%d/%d concurrent execs failed", errors, N)
+	}
+}
+
+func TestPerfMultiVMBoot(t *testing.T) {
+	eng := testEngine(t)
+	ctx := context.Background()
+
+	const N = 3
+	start := time.Now()
+	var infos []engine.SandboxInfo
+	for i := 0; i < N; i++ {
+		info, err := eng.Create(ctx, testSpec(fmt.Sprintf("perf-multi-%d", i)))
+		if err != nil {
+			t.Fatalf("Create %d: %v", i, err)
+		}
+		infos = append(infos, info)
+	}
+	totalBoot := time.Since(start)
+	defer func() {
+		for _, info := range infos {
+			eng.Destroy(ctx, info.ID)
+		}
+	}()
+
+	t.Logf("⏱ %d VMs sequential boot: %v (avg %v/VM)", N, totalBoot, totalBoot/N)
+
+	// Verify all work
+	for _, info := range infos {
+		r, _ := execWithTimeout(t, eng, info.ID, []string{"true"})
+		if r.ExitCode != 0 {
+			t.Errorf("VM %s exec failed", info.ID)
+		}
+	}
 }
 
 func TestPerfEnsureHotWarm(t *testing.T) {

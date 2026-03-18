@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sahilshubham/bhatti/pkg/agent"
 	"github.com/sahilshubham/bhatti/pkg/agent/proto"
@@ -113,17 +114,19 @@ func TestAuthForwardChannel(t *testing.T) {
 	}
 	defer eng.Destroy(ctx, info.ID)
 
-	// Start a listener inside the VM
-	execWithTimeout(t, eng, info.ID, []string{"sh", "-c",
-		"echo fwd-data | nc -l -p 8888 &"})
-
-	// Try forwarding without auth — should fail
+	// Try forwarding without auth — should fail fast (no listener needed,
+	// auth is checked before the forward request is even processed)
 	noAuthClient := agent.NewTCPClient(info.IP)
+	start := time.Now()
 	_, err = noAuthClient.Forward(ctx, 8888)
+	elapsed := time.Since(start)
 	if err == nil {
 		t.Error("expected forward to fail without auth")
 	} else {
-		t.Logf("✓ unauthenticated forward rejected: %v", err)
+		t.Logf("✓ unauthenticated forward rejected in %v: %v", elapsed, err)
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("auth rejection too slow: %v (want <3s)", elapsed)
 	}
 }
 

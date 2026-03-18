@@ -673,6 +673,9 @@ func (e *Engine) Exec(ctx context.Context, id string, cmd []string) (engine.Exec
 	if err != nil {
 		return engine.ExecResult{}, err
 	}
+	if vm.Thermal != "hot" {
+		return engine.ExecResult{}, fmt.Errorf("sandbox %q is not hot (thermal=%s)", id, vm.Thermal)
+	}
 	return vm.Agent.Exec(ctx, cmd, nil, "")
 }
 
@@ -680,6 +683,9 @@ func (e *Engine) Shell(ctx context.Context, id string) (engine.TerminalConn, err
 	vm, err := e.getVM(id)
 	if err != nil {
 		return nil, err
+	}
+	if vm.Thermal != "hot" {
+		return nil, fmt.Errorf("sandbox %q is not hot (thermal=%s)", id, vm.Thermal)
 	}
 	return vm.Agent.Shell(ctx, []string{"/bin/zsh", "-li"}, map[string]string{
 		"TERM": "xterm-256color",
@@ -690,6 +696,9 @@ func (e *Engine) ListeningPorts(ctx context.Context, id string) ([]int, error) {
 	vm, err := e.getVM(id)
 	if err != nil {
 		return nil, err
+	}
+	if vm.Thermal != "hot" {
+		return nil, fmt.Errorf("sandbox %q is not hot (thermal=%s)", id, vm.Thermal)
 	}
 	result, err := vm.Agent.Exec(ctx, []string{"ss", "-tln", "--no-header"}, nil, "")
 	if err != nil {
@@ -702,6 +711,9 @@ func (e *Engine) Tunnel(ctx context.Context, id string, port int) (io.ReadWriteC
 	vm, err := e.getVM(id)
 	if err != nil {
 		return nil, err
+	}
+	if vm.Thermal != "hot" {
+		return nil, fmt.Errorf("sandbox %q is not hot (thermal=%s)", id, vm.Thermal)
 	}
 	return vm.Agent.Forward(ctx, uint16(port))
 }
