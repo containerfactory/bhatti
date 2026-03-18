@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
+	"strings"
 	"syscall"
 	"time"
 	"unsafe"
@@ -193,15 +195,101 @@ func bringUpInterface(name string) {
 	}
 }
 
+// setupNetworking configures eth0 from the kernel ip= cmdline parameter.
+// This makes lohar work with ANY kernel — no CONFIG_IP_PNP required.
+//
+// Format: ip=<client-ip>::<gateway>:<netmask>::<device>:off:<dns1>:<dns2>:
+// Example: ip=192.168.137.2::192.168.137.1:255.255.255.0::eth0:off:1.1.1.1:8.8.8.8:
 func setupNetworking() {
-	ifaces, err := net.Interfaces()
+	cmdline, err := os.ReadFile("/proc/cmdline")
 	if err != nil {
+		logf("cannot read /proc/cmdline: %v", err)
 		return
 	}
-	for _, iface := range ifaces {
-		addrs, _ := iface.Addrs()
-		for _, addr := range addrs {
-			logf("net: %s: %s", iface.Name, addr)
+
+	// Parse ip= parameter
+	var ipParam string
+	for _, field := range strings.Fields(string(cmdline)) {
+		if strings.HasPrefix(field, "ip=") {
+			ipParam = strings.TrimPrefix(field, "ip=")
+			break
 		}
 	}
+	if ipParam == "" {
+		logf("no ip= in cmdline, skipping network setup")
+		return
+	}
+
+	// Parse fields: client-ip::gateway:netmask::device:...
+	parts := strings.Split(ipParam, ":")
+	if len(parts) < 4 {
+		logf("ip= parameter too short: %q", ipParam)
+		return
+	}
+	clientIP := parts[0]
+	gateway := parts[2]
+	netmask := parts[3]
+	device := "eth0"
+	if len(parts) > 5 && parts[5] != "" {
+		device = parts[5]
+	}
+
+	if clientIP == "" || netmask == "" {
+		logf("ip= missing client IP or netmask: %q", ipParam)
+		return
+	}
+
+	// Check if the kernel already configured the interface (CONFIG_IP_PNP=y)
+	iface, err := net.InterfaceByName(device)
+	if err == nil {
+		addrs, _ := iface.Addrs()
+		for _, addr := range addrs {
+			if strings.HasPrefix(addr.String(), clientIP+"/") {
+				logf("net: %s: %s (kernel-configured)", device, addr)
+				return
+			}
+		}
+	}
+
+	// Kernel didn't configure it — do it ourselves via ip commands
+	logf("net: configuring %s %s/%s gw %s", device, clientIP, netmask, gateway)
+
+	// Convert dotted netmask to CIDR prefix length
+	prefix := netmaskToCIDR(netmask)
+
+	bringUpInterface(device)
+	if err := run("ip", "addr", "add", fmt.Sprintf("%s/%d", clientIP, prefix), "dev", device); err != nil {
+		logf("ip addr add: %v", err)
+		return
+	}
+	if gateway != "" {
+		if err := run("ip", "route", "add", "default", "via", gateway, "dev", device); err != nil {
+			logf("ip route add: %v", err)
+		}
+	}
+
+	logf("net: %s: %s/%d", device, clientIP, prefix)
+}
+
+// netmaskToCIDR converts "255.255.255.0" to 24.
+func netmaskToCIDR(mask string) int {
+	ip := net.ParseIP(mask)
+	if ip == nil {
+		return 24
+	}
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return 24
+	}
+	ones, _ := net.IPv4Mask(ip4[0], ip4[1], ip4[2], ip4[3]).Size()
+	return ones
+}
+
+// run executes a command and returns an error if it fails.
+func run(name string, args ...string) error {
+	out, err := exec.Command(name, args...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s %v: %s: %w", name, args, strings.TrimSpace(string(out)), err)
+	}
+	return nil
 }

@@ -62,19 +62,22 @@ sudo chown $(whoami):$(whoami) /var/lib/bhatti -R
 
 ## 4. Download Kernel
 
-Pre-built aarch64 Linux kernel from Amazon's Firecracker quickstart images.
+Pre-built aarch64 Linux 6.1 kernel from Firecracker CI artifacts.
 Includes virtio-blk, virtio-net, virtio-vsock, ext4 — everything Firecracker needs.
+
+**Important:** Do NOT use the old quickstart kernel (4.14) — it crashes on
+Pi 5 (Cortex-A76) and is missing features needed by Ubuntu 24.04.
 
 ```bash
 curl -fsSL \
-  'https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/aarch64/kernels/vmlinux.bin' \
+  'https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.6.0/aarch64/vmlinux-6.1.58' \
   -o /var/lib/bhatti/images/vmlinux-arm64
 
 # Verify
 file /var/lib/bhatti/images/vmlinux-arm64
 # → Linux kernel ARM64 boot executable Image, little-endian, 4K pages
 ls -lh /var/lib/bhatti/images/vmlinux-arm64
-# → ~8MB
+# → ~31MB
 ```
 
 ## 5. Build Agent Binary

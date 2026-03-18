@@ -93,6 +93,23 @@ func ensureBridge() error {
 			return fmt.Errorf("add masquerade rule: %w", err)
 		}
 	}
+
+	// Add FORWARD rules for bridge traffic. Required when FORWARD policy is
+	// DROP (e.g. Kubernetes sets this). Insert at top (-I) so they take
+	// priority over any DROP rules added by kube-router, etc.
+	forwardRules := [][5]string{
+		{"-i", bridgeName, "-o", bridgeName, "-j"},  // bridge ↔ bridge (inter-VM)
+		{"-i", bridgeName, "-o", defaultIface, "-j"}, // VM → internet
+		{"-i", defaultIface, "-o", bridgeName, "-j"}, // internet → VM (return traffic)
+	}
+	for _, r := range forwardRules {
+		if err := runQuiet("iptables", "-C", "FORWARD",
+			r[0], r[1], r[2], r[3], r[4], "ACCEPT"); err != nil {
+			runQuiet("iptables", "-I", "FORWARD", "1",
+				r[0], r[1], r[2], r[3], r[4], "ACCEPT")
+		}
+	}
+
 	return nil
 }
 

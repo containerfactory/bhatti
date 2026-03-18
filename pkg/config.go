@@ -4,7 +4,6 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -32,7 +31,12 @@ func DefaultDataDir() string {
 	return filepath.Join(home, ".bhatti")
 }
 
-// LoadConfig reads ~/.bhatti/config.yaml or returns sensible defaults.
+// LoadConfig reads config.yaml from one of these locations (first match wins):
+//  1. $BHATTI_CONFIG (explicit path)
+//  2. ./config.yaml (working directory — for systemd WorkingDirectory)
+//  3. ~/.bhatti/config.yaml (user default)
+//
+// Returns sensible defaults if no config file is found.
 func LoadConfig() (*Config, error) {
 	dir := DefaultDataDir()
 	cfg := &Config{
@@ -41,16 +45,33 @@ func LoadConfig() (*Config, error) {
 		DataDir: dir,
 	}
 
-	path := filepath.Join(dir, "config.yaml")
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return cfg, nil
+	// Search order for config file
+	candidates := []string{
+		os.Getenv("BHATTI_CONFIG"),          // explicit override
+		"config.yaml",                       // working directory
+		filepath.Join(dir, "config.yaml"),   // ~/.bhatti/config.yaml
 	}
-	if err != nil {
-		return nil, fmt.Errorf("read config: %w", err)
+
+	var data []byte
+	var loadedFrom string
+	for _, path := range candidates {
+		if path == "" {
+			continue
+		}
+		d, err := os.ReadFile(path)
+		if err == nil {
+			data = d
+			loadedFrom = path
+			break
+		}
 	}
+
+	if data == nil {
+		return cfg, nil // no config found, use defaults
+	}
+
 	if err := yaml.Unmarshal(data, cfg); err != nil {
-		return nil, fmt.Errorf("parse config: %w", err)
+		return nil, fmt.Errorf("parse config %s: %w", loadedFrom, err)
 	}
 	if cfg.DataDir == "" {
 		cfg.DataDir = dir

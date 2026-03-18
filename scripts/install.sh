@@ -2,17 +2,29 @@
 # scripts/install.sh — Install bhatti from source on a Linux host with KVM.
 #
 # Prerequisites: git, KVM (/dev/kvm)
-# The script installs Go if not present.
+# The script installs Go and Firecracker if not present.
 #
 # Usage (from repo root):
 #   sudo ./scripts/install.sh
+#
+# For systemd service (optional):
+#   sudo ./scripts/install.sh --systemd
 #
 # Supports aarch64 and x86_64.
 set -euo pipefail
 
 FC_VERSION="1.6.0"
+FC_MAJOR_MINOR="1.6"
 GO_VERSION="1.24.1"
 DATA_DIR="/var/lib/bhatti"
+INSTALL_SYSTEMD=false
+
+# Parse flags
+for arg in "$@"; do
+    case "$arg" in
+        --systemd) INSTALL_SYSTEMD=true ;;
+    esac
+done
 
 # --- Preflight ---
 
@@ -39,6 +51,13 @@ if [[ ! -e /dev/kvm ]]; then
     fi
 fi
 
+for cmd in curl mktemp; do
+    if ! command -v "$cmd" &>/dev/null; then
+        echo "error: $cmd is required but not installed" >&2
+        exit 1
+    fi
+done
+
 # Find repo root (script is at scripts/install.sh)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -47,14 +66,6 @@ if [[ ! -f "$REPO_ROOT/go.mod" ]]; then
     echo "error: cannot find repo root (expected go.mod at $REPO_ROOT)" >&2
     exit 1
 fi
-
-# Check required tools
-for cmd in curl mktemp; do
-    if ! command -v "$cmd" &>/dev/null; then
-        echo "error: $cmd is required but not installed" >&2
-        exit 1
-    fi
-done
 
 echo "==> Installing bhatti on $(hostname) ($HOST_ARCH)"
 echo "    repo: $REPO_ROOT"
@@ -105,11 +116,12 @@ echo "  lohar:  $(ls -lh "$DATA_DIR/lohar" | awk '{print $5}')"
 
 # --- Kernel ---
 
+KERNEL_VERSION="6.1.58"
 KERNEL_PATH="$DATA_DIR/images/vmlinux-${GO_ARCH}"
 if [[ ! -f "$KERNEL_PATH" ]]; then
-    echo "==> Downloading kernel..."
+    echo "==> Downloading kernel ${KERNEL_VERSION} (Firecracker CI, ${FC_ARCH})..."
     curl -fsSL \
-        "https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/${FC_ARCH}/kernels/vmlinux.bin" \
+        "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v${FC_MAJOR_MINOR}/${FC_ARCH}/vmlinux-${KERNEL_VERSION}" \
         -o "$KERNEL_PATH"
     echo "  saved to $KERNEL_PATH ($(ls -lh "$KERNEL_PATH" | awk '{print $5}'))"
 else
@@ -165,44 +177,76 @@ if [[ ! -f "$DATA_DIR/age.key" ]]; then
     chmod 600 "$DATA_DIR/age.key"
 fi
 
-# --- Systemd ---
+# --- User CLI config ---
+# Create ~/.bhatti/config.yaml for the user who ran sudo,
+# so `bhatti list` etc. work without BHATTI_TOKEN env var.
 
-echo "==> Installing systemd service..."
-cp "$REPO_ROOT/deploy/bhatti.service" /etc/systemd/system/bhatti.service
-systemctl daemon-reload
-systemctl enable bhatti
-systemctl restart bhatti
+SUDO_USER_HOME=""
+if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+    SUDO_USER_HOME=$(eval echo "~$SUDO_USER")
+fi
 
-# Wait for daemon to start
-echo -n "  waiting for daemon..."
-for i in $(seq 1 30); do
-    if curl -sf http://localhost:8080/sandboxes >/dev/null 2>&1; then
-        echo " ready"
-        break
-    fi
-    if [[ $i -eq 30 ]]; then
-        echo " TIMEOUT"
-        echo "error: daemon did not start. Check: journalctl -u bhatti" >&2
-        exit 1
-    fi
-    sleep 1
-    echo -n "."
-done
+TOKEN=$(grep auth_token "$DATA_DIR/config.yaml" | awk '{print $2}')
+
+if [[ -n "$SUDO_USER_HOME" ]]; then
+    USER_CFG_DIR="$SUDO_USER_HOME/.bhatti"
+    mkdir -p "$USER_CFG_DIR"
+    cat > "$USER_CFG_DIR/config.yaml" << EOF
+auth_token: ${TOKEN}
+listen: :8080
+EOF
+    chown -R "$SUDO_USER:$SUDO_USER" "$USER_CFG_DIR"
+    echo "==> Created $USER_CFG_DIR/config.yaml"
+fi
+
+# Also create for root (daemon reads from cwd, but CLI as root needs it)
+mkdir -p /root/.bhatti
+cat > /root/.bhatti/config.yaml << EOF
+auth_token: ${TOKEN}
+listen: :8080
+EOF
+
+# --- Systemd (optional) ---
+
+if [[ "$INSTALL_SYSTEMD" == "true" ]]; then
+    echo "==> Installing systemd service..."
+    cp "$REPO_ROOT/deploy/bhatti.service" /etc/systemd/system/bhatti.service
+    systemctl daemon-reload
+    systemctl enable bhatti
+    systemctl restart bhatti
+
+    echo -n "  waiting for daemon..."
+    for i in $(seq 1 30); do
+        if curl -sf http://localhost:8080/sandboxes >/dev/null 2>&1; then
+            echo " ready"
+            break
+        fi
+        if [[ $i -eq 30 ]]; then
+            echo " TIMEOUT"
+            echo "error: daemon did not start. Check: journalctl -u bhatti" >&2
+            exit 1
+        fi
+        sleep 1
+        echo -n "."
+    done
+fi
 
 # --- Summary ---
 
-TOKEN=$(grep auth_token "$DATA_DIR/config.yaml" | awk '{print $2}')
 echo ""
 echo "============================================"
-echo "  bhatti is running on :8080"
-echo "  arch: $HOST_ARCH"
-echo "  auth token: ${TOKEN}"
+echo "  bhatti installed on $(hostname) ($HOST_ARCH)"
 echo ""
-echo "  Quick start:"
-echo "    export BHATTI_URL=http://localhost:8080"
-echo "    export BHATTI_TOKEN=${TOKEN}"
+echo "  To start the daemon:"
+echo "    cd $DATA_DIR && sudo bhatti serve"
+echo ""
+echo "  Then in another terminal:"
 echo "    bhatti create --name hello"
 echo "    bhatti exec hello -- echo 'it works'"
 echo "    bhatti shell hello"
 echo "    bhatti destroy hello"
+if [[ "$INSTALL_SYSTEMD" == "true" ]]; then
+    echo ""
+    echo "  systemd service: active (bhatti.service)"
+fi
 echo "============================================"
