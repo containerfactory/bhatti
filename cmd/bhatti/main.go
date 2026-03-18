@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 
 	"github.com/sahilshubham/bhatti/pkg"
@@ -19,6 +18,15 @@ import (
 )
 
 func main() {
+	// CLI mode: any subcommand other than "serve" (or no args)
+	if len(os.Args) > 1 && os.Args[1] != "serve" {
+		runCLI()
+		return
+	}
+	runDaemon()
+}
+
+func runDaemon() {
 	cfg, err := pkg.LoadConfig()
 	if err != nil {
 		log.Fatal(err)
@@ -76,9 +84,6 @@ func main() {
 
 	// Resolve the port for display
 	port := cfg.Listen
-	if strings.HasPrefix(port, ":") {
-		port = port // already just ":PORT"
-	}
 
 	log.Printf("bhatti listening on %s", cfg.Listen)
 	if lanIP := getLanIP(); lanIP != "" {
@@ -137,7 +142,6 @@ func recoverVMs(st *store.Store, provider engine.VMStateProvider) {
 		}
 
 		if sb.Status == "stopped" && fcState.SnapMemPath != "" {
-			// Has snapshot — can be resumed
 			if _, err := os.Stat(fcState.SnapMemPath); err == nil {
 				provider.RestoreVM(sb.EngineID, sb.Name, "stopped", state)
 				recovered++
@@ -147,7 +151,6 @@ func recoverVMs(st *store.Store, provider engine.VMStateProvider) {
 				log.Printf("sandbox %s snapshot missing, marked unknown", sb.Name)
 			}
 		} else if sb.Status == "running" {
-			// Was running — FC process is dead after server restart.
 			if fcState.SnapMemPath != "" {
 				st.UpdateSandboxStatus(sb.ID, "stopped")
 				provider.RestoreVM(sb.EngineID, sb.Name, "stopped", state)
