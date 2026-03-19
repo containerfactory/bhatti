@@ -896,6 +896,25 @@ func TestWSAuthBearerHeader(t *testing.T) {
 	ws.Close()
 }
 
+func TestRequestBodyTooLarge(t *testing.T) {
+	_, ts := setup(t)
+
+	// Send a 2MB body — should be rejected
+	bigBody := strings.Repeat("x", 2<<20)
+	req, _ := http.NewRequest("POST", ts.URL+"/sandboxes", strings.NewReader(bigBody))
+	req.Header.Set("Authorization", "Bearer test-token")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	// Should get 400 (bad JSON / body too large), not 201 or hang
+	if resp.StatusCode == 201 {
+		t.Fatal("expected rejection of 2MB body, but got 201")
+	}
+}
+
 func TestWSAuthWrongToken(t *testing.T) {
 	_, ts := setup(t)
 
