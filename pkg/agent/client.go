@@ -65,16 +65,18 @@ func NewTestClient(controlSock, forwardSock string) *AgentClient {
 	}
 }
 
-// dialControl opens a connection to the control channel (port 1024).
-func (c *AgentClient) dialControl() (net.Conn, error) {
+// DialControl opens a connection to the control channel (port 1024).
+// The context controls connection timeout and cancellation.
+func (c *AgentClient) DialControl(ctx context.Context) (net.Conn, error) {
+	var d net.Dialer
 	var conn net.Conn
 	var err error
 	if c.tcpAddr != "" {
-		conn, err = net.Dial("tcp", net.JoinHostPort(c.tcpAddr, fmt.Sprint(proto.VsockPortControl)))
+		conn, err = d.DialContext(ctx, "tcp", net.JoinHostPort(c.tcpAddr, fmt.Sprint(proto.VsockPortControl)))
 	} else if c.isVsock {
-		conn, err = c.dialVsockPort(c.controlSock, proto.VsockPortControl)
+		conn, err = c.dialVsockPort(ctx, c.controlSock, proto.VsockPortControl)
 	} else {
-		conn, err = net.Dial("unix", c.controlSock)
+		conn, err = d.DialContext(ctx, "unix", c.controlSock)
 	}
 	if err != nil {
 		return nil, err
@@ -87,15 +89,16 @@ func (c *AgentClient) dialControl() (net.Conn, error) {
 }
 
 // dialForward opens a connection to the forward channel (port 1025).
-func (c *AgentClient) dialForward() (net.Conn, error) {
+func (c *AgentClient) dialForward(ctx context.Context) (net.Conn, error) {
+	var d net.Dialer
 	var conn net.Conn
 	var err error
 	if c.tcpAddr != "" {
-		conn, err = net.Dial("tcp", net.JoinHostPort(c.tcpAddr, fmt.Sprint(proto.VsockPortForward)))
+		conn, err = d.DialContext(ctx, "tcp", net.JoinHostPort(c.tcpAddr, fmt.Sprint(proto.VsockPortForward)))
 	} else if c.isVsock {
-		conn, err = c.dialVsockPort(c.forwardSock, proto.VsockPortForward)
+		conn, err = c.dialVsockPort(ctx, c.forwardSock, proto.VsockPortForward)
 	} else {
-		conn, err = net.Dial("unix", c.forwardSock)
+		conn, err = d.DialContext(ctx, "unix", c.forwardSock)
 	}
 	if err != nil {
 		return nil, err
@@ -117,8 +120,9 @@ func (c *AgentClient) sendAuth(conn net.Conn) error {
 
 // dialVsockPort performs the Firecracker vsock CONNECT handshake.
 // See: https://github.com/firecracker-microvm/firecracker/blob/main/docs/vsock.md
-func (c *AgentClient) dialVsockPort(udsPath string, port uint32) (net.Conn, error) {
-	conn, err := net.Dial("unix", udsPath)
+func (c *AgentClient) dialVsockPort(ctx context.Context, udsPath string, port uint32) (net.Conn, error) {
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "unix", udsPath)
 	if err != nil {
 		return nil, fmt.Errorf("vsock dial %s: %w", udsPath, err)
 	}
@@ -145,7 +149,7 @@ func (c *AgentClient) dialVsockPort(udsPath string, port uint32) (net.Conn, erro
 
 // Exec runs a command non-interactively and returns after it exits.
 func (c *AgentClient) Exec(ctx context.Context, argv []string, env map[string]string, cwd string) (engine.ExecResult, error) {
-	conn, err := c.dialControl()
+	conn, err := c.DialControl(ctx)
 	if err != nil {
 		return engine.ExecResult{}, fmt.Errorf("agent connect: %w", err)
 	}
@@ -192,7 +196,7 @@ func (c *AgentClient) Exec(ctx context.Context, argv []string, env map[string]st
 
 // Shell opens an interactive TTY session and returns a TerminalConn.
 func (c *AgentClient) Shell(ctx context.Context, argv []string, env map[string]string, rows, cols uint16) (engine.TerminalConn, error) {
-	conn, err := c.dialControl()
+	conn, err := c.DialControl(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("agent connect: %w", err)
 	}
@@ -227,7 +231,7 @@ func (c *AgentClient) Shell(ctx context.Context, argv []string, env map[string]s
 
 // Forward opens a raw TCP tunnel to a port inside the guest.
 func (c *AgentClient) Forward(ctx context.Context, port uint16) (io.ReadWriteCloser, error) {
-	conn, err := c.dialForward()
+	conn, err := c.dialForward(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("agent forward connect: %w", err)
 	}
@@ -296,7 +300,7 @@ func (c *AgentClient) WaitReady(ctx context.Context, timeout time.Duration) erro
 
 // SessionList returns all active sessions inside the VM.
 func (c *AgentClient) SessionList(ctx context.Context) ([]proto.SessionInfo, error) {
-	conn, err := c.dialControl()
+	conn, err := c.DialControl(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("agent connect: %w", err)
 	}
@@ -327,7 +331,7 @@ func (c *AgentClient) SessionList(ctx context.Context) ([]proto.SessionInfo, err
 
 // Activity queries the agent for activity info (last interaction, session counts).
 func (c *AgentClient) Activity(ctx context.Context) (*proto.ActivityInfo, error) {
-	conn, err := c.dialControl()
+	conn, err := c.DialControl(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("agent connect: %w", err)
 	}
@@ -358,7 +362,7 @@ func (c *AgentClient) Activity(ctx context.Context) (*proto.ActivityInfo, error)
 
 // SessionKill sends SIGTERM to a session's process.
 func (c *AgentClient) SessionKill(ctx context.Context, sessionID string) error {
-	conn, err := c.dialControl()
+	conn, err := c.DialControl(ctx)
 	if err != nil {
 		return fmt.Errorf("agent connect: %w", err)
 	}
@@ -387,7 +391,7 @@ func (c *AgentClient) SessionKill(ctx context.Context, sessionID string) error {
 
 // ShellSession opens a TTY session and returns both the session info and the terminal connection.
 func (c *AgentClient) ShellSession(ctx context.Context, argv []string, env map[string]string, rows, cols uint16) (*proto.SessionInfo, engine.TerminalConn, error) {
-	conn, err := c.dialControl()
+	conn, err := c.DialControl(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("agent connect: %w", err)
 	}
@@ -430,7 +434,7 @@ func (c *AgentClient) ShellSession(ctx context.Context, argv []string, env map[s
 
 // SessionAttach reconnects to an existing session and returns the session info and terminal.
 func (c *AgentClient) SessionAttach(ctx context.Context, sessionID string) (*proto.SessionInfo, engine.TerminalConn, error) {
-	conn, err := c.dialControl()
+	conn, err := c.DialControl(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("agent connect: %w", err)
 	}
@@ -467,7 +471,7 @@ func (c *AgentClient) SessionAttach(ctx context.Context, sessionID string) (*pro
 // FileRead reads a file from the guest and writes its contents to w.
 // Returns the file size and mode.
 func (c *AgentClient) FileRead(ctx context.Context, path string, w io.Writer) (size int64, mode string, err error) {
-	conn, err := c.dialControl()
+	conn, err := c.DialControl(ctx)
 	if err != nil {
 		return 0, "", err
 	}
@@ -521,7 +525,7 @@ func (c *AgentClient) FileRead(ctx context.Context, path string, w io.Writer) (s
 
 // FileWrite writes content from r to a file in the guest.
 func (c *AgentClient) FileWrite(ctx context.Context, path, mode string, size int64, r io.Reader) error {
-	conn, err := c.dialControl()
+	conn, err := c.DialControl(ctx)
 	if err != nil {
 		return err
 	}
@@ -564,7 +568,7 @@ func (c *AgentClient) FileWrite(ctx context.Context, path, mode string, size int
 
 // FileStat returns file info for a path in the guest.
 func (c *AgentClient) FileStat(ctx context.Context, path string) (*proto.FileInfo, error) {
-	conn, err := c.dialControl()
+	conn, err := c.DialControl(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -597,7 +601,7 @@ func (c *AgentClient) FileStat(ctx context.Context, path string) (*proto.FileInf
 
 // FileList returns directory contents for a path in the guest.
 func (c *AgentClient) FileList(ctx context.Context, path string) ([]proto.FileInfo, error) {
-	conn, err := c.dialControl()
+	conn, err := c.DialControl(ctx)
 	if err != nil {
 		return nil, err
 	}

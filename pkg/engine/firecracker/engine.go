@@ -810,9 +810,10 @@ func copyRootfs(src, dst string) error {
 // fcAPIClient returns an HTTP client that talks to Firecracker's API over a Unix socket.
 func fcAPIClient(socketPath string) *http.Client {
 	return &http.Client{
+		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return net.Dial("unix", socketPath)
+				return net.DialTimeout("unix", socketPath, 5*time.Second)
 			},
 		},
 	}

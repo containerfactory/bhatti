@@ -111,7 +111,10 @@ func (s *Server) runThermalCycle(te ThermalEngine, cfg ThermalConfig) {
 			continue
 		}
 
-		activity, err := te.Activity(context.Background(), sb.EngineID)
+		// Per-sandbox timeout prevents one hung VM from blocking the cycle
+		actCtx, actCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		activity, err := te.Activity(actCtx, sb.EngineID)
+		actCancel()
 		if err != nil {
 			continue
 		}
