@@ -149,15 +149,42 @@ func (e *Engine) getVM(id string) (*VM, error) {
 
 // --- Create ---
 
-func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (engine.SandboxInfo, error) {
+func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (info engine.SandboxInfo, err error) {
 	id := generateID()
 	sandboxDir := filepath.Join(e.cfg.DataDir, "sandboxes", id)
 	os.MkdirAll(sandboxDir, 0700)
 
+	// Deferred cleanup: on any error, release all resources acquired so far.
+	// Uses named return `err` so the defer sees the final error value.
+	var (
+		guestIP  string
+		tapName  string
+		vmCancel context.CancelFunc
+		fcCmd    *exec.Cmd
+	)
+	defer func() {
+		if err != nil {
+			if fcCmd != nil && fcCmd.Process != nil {
+				fcCmd.Process.Kill()
+				fcCmd.Wait()
+			}
+			if vmCancel != nil {
+				vmCancel()
+			}
+			if tapName != "" {
+				destroyTapDevice(tapName)
+			}
+			if guestIP != "" {
+				e.pool.Release(guestIP)
+			}
+			os.RemoveAll(sandboxDir)
+		}
+	}()
+
 	// 1. Copy rootfs
 	rootfsPath := filepath.Join(sandboxDir, "rootfs.ext4")
-	if err := copyRootfs(e.cfg.BaseRootfs, rootfsPath); err != nil {
-		return engine.SandboxInfo{}, fmt.Errorf("copy rootfs: %w", err)
+	if err = copyRootfs(e.cfg.BaseRootfs, rootfsPath); err != nil {
+		return info, fmt.Errorf("copy rootfs: %w", err)
 	}
 
 	// 2. Allocate CID and paths
@@ -166,16 +193,13 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (engine.Sa
 	vsockPath := filepath.Join(sandboxDir, "vsock.sock")
 
 	// 3. Allocate IP and create TAP device
-	guestIP, err := e.pool.Allocate()
+	guestIP, err = e.pool.Allocate()
 	if err != nil {
-		os.RemoveAll(sandboxDir)
-		return engine.SandboxInfo{}, fmt.Errorf("allocate IP: %w", err)
+		return info, fmt.Errorf("allocate IP: %w", err)
 	}
-	tapName, err := createTapDevice(id)
+	tapName, err = createTapDevice(id)
 	if err != nil {
-		e.pool.Release(guestIP)
-		os.RemoveAll(sandboxDir)
-		return engine.SandboxInfo{}, fmt.Errorf("create tap: %w", err)
+		return info, fmt.Errorf("create tap: %w", err)
 	}
 
 	// 4. Compute VM config
@@ -212,10 +236,8 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (engine.Sa
 	driveIndex := byte('c') // vdb=config, vdc=first vol, vdd=second, ...
 	for _, vs := range spec.NewVolumes {
 		volPath := filepath.Join(sandboxDir, fmt.Sprintf("vol-%s.ext4", vs.Name))
-		if err := createVolume(volPath, vs.SizeMB); err != nil {
-			destroyTapDevice(tapName); e.pool.Release(guestIP)
-			os.RemoveAll(sandboxDir)
-			return engine.SandboxInfo{}, fmt.Errorf("create volume %s: %w", vs.Name, err)
+		if err = createVolume(volPath, vs.SizeMB); err != nil {
+			return info, fmt.Errorf("create volume %s: %w", vs.Name, err)
 		}
 		device := fmt.Sprintf("/dev/vd%c", driveIndex)
 		volumeMounts = append(volumeMounts, VolumeMountConfig{
@@ -229,7 +251,7 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (engine.Sa
 		name = id
 	}
 
-	if err := createConfigDrive(configDrivePath, SandboxConfig{
+	if err = createConfigDrive(configDrivePath, SandboxConfig{
 		SandboxID: id,
 		Hostname:  name,
 		Token:     token,
@@ -240,21 +262,17 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (engine.Sa
 		DNS:       []string{"1.1.1.1", "8.8.8.8"},
 		User:      "lohar",
 	}); err != nil {
-		destroyTapDevice(tapName); e.pool.Release(guestIP)
-		os.RemoveAll(sandboxDir)
-		return engine.SandboxInfo{}, fmt.Errorf("create config drive: %w", err)
+		return info, fmt.Errorf("create config drive: %w", err)
 	}
 
 	// 5. Start Firecracker process
-	vmCtx, vmCancel := context.WithCancel(context.Background())
+	var vmCtx context.Context
+	vmCtx, vmCancel = context.WithCancel(context.Background())
 	os.Remove(socketPath)
-	fcCmd := exec.CommandContext(vmCtx, e.cfg.FCBinary, "--api-sock", socketPath)
+	fcCmd = exec.CommandContext(vmCtx, e.cfg.FCBinary, "--api-sock", socketPath)
 	fcCmd.Stderr = os.Stderr
-	if err := fcCmd.Start(); err != nil {
-		vmCancel()
-		destroyTapDevice(tapName); e.pool.Release(guestIP)
-		os.RemoveAll(sandboxDir)
-		return engine.SandboxInfo{}, fmt.Errorf("start firecracker: %w", err)
+	if err = fcCmd.Start(); err != nil {
+		return info, fmt.Errorf("start firecracker: %w", err)
 	}
 
 	// Wait for API socket to appear
@@ -269,104 +287,65 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (engine.Sa
 	client := fcAPIClient(socketPath)
 
 	// Boot args include ip= for kernel-level network configuration.
-	// Format: ip=<client-ip>::<gateway>:<netmask>::<device>:off:<dns1>:<dns2>:
-	// This configures eth0 before init runs, so the agent's TCP listener works immediately.
 	bootArgs := fmt.Sprintf(
 		"console=ttyS0 reboot=k panic=1 pci=off init=/usr/local/bin/lohar quiet loglevel=0 ip=%s::%s:255.255.255.0::eth0:off:1.1.1.1:8.8.8.8:",
 		guestIP, bridgeIP)
 
-	if err := fcPut(client, "/boot-source", fmt.Sprintf(
+	if err = fcPut(client, "/boot-source", fmt.Sprintf(
 		`{"kernel_image_path":%q,"boot_args":%q}`,
 		e.cfg.KernelPath, bootArgs)); err != nil {
-		fcCmd.Process.Kill()
-		vmCancel()
-		destroyTapDevice(tapName); e.pool.Release(guestIP)
-		os.RemoveAll(sandboxDir)
-		return engine.SandboxInfo{}, fmt.Errorf("set boot-source: %w", err)
+		return info, fmt.Errorf("set boot-source: %w", err)
 	}
 
-	if err := fcPut(client, "/drives/rootfs", fmt.Sprintf(
+	if err = fcPut(client, "/drives/rootfs", fmt.Sprintf(
 		`{"drive_id":"rootfs","path_on_host":%q,"is_root_device":true,"is_read_only":false}`,
 		rootfsPath)); err != nil {
-		fcCmd.Process.Kill()
-		vmCancel()
-		destroyTapDevice(tapName); e.pool.Release(guestIP)
-		os.RemoveAll(sandboxDir)
-		return engine.SandboxInfo{}, fmt.Errorf("set drive: %w", err)
+		return info, fmt.Errorf("set drive: %w", err)
 	}
 
-	if err := fcPut(client, "/machine-config", fmt.Sprintf(
+	if err = fcPut(client, "/machine-config", fmt.Sprintf(
 		`{"vcpu_count":%d,"mem_size_mib":%d}`, vcpuCount, memMB)); err != nil {
-		fcCmd.Process.Kill()
-		vmCancel()
-		destroyTapDevice(tapName); e.pool.Release(guestIP)
-		os.RemoveAll(sandboxDir)
-		return engine.SandboxInfo{}, fmt.Errorf("set machine-config: %w", err)
+		return info, fmt.Errorf("set machine-config: %w", err)
 	}
 
-	if err := fcPut(client, "/vsock", fmt.Sprintf(
+	if err = fcPut(client, "/vsock", fmt.Sprintf(
 		`{"guest_cid":%d,"uds_path":%q}`, cid, vsockPath)); err != nil {
-		fcCmd.Process.Kill()
-		vmCancel()
-		destroyTapDevice(tapName); e.pool.Release(guestIP)
-		os.RemoveAll(sandboxDir)
-		return engine.SandboxInfo{}, fmt.Errorf("set vsock: %w", err)
+		return info, fmt.Errorf("set vsock: %w", err)
 	}
 
-	if err := fcPut(client, "/network-interfaces/eth0", fmt.Sprintf(
+	if err = fcPut(client, "/network-interfaces/eth0", fmt.Sprintf(
 		`{"iface_id":"eth0","guest_mac":%q,"host_dev_name":%q}`,
 		mac, tapName)); err != nil {
-		fcCmd.Process.Kill()
-		vmCancel()
-		destroyTapDevice(tapName); e.pool.Release(guestIP)
-		os.RemoveAll(sandboxDir)
-		return engine.SandboxInfo{}, fmt.Errorf("set network: %w", err)
+		return info, fmt.Errorf("set network: %w", err)
 	}
 
 	// 6b. Attach config drive as /dev/vdb
-	if err := fcPut(client, "/drives/config", fmt.Sprintf(
+	if err = fcPut(client, "/drives/config", fmt.Sprintf(
 		`{"drive_id":"config","path_on_host":%q,"is_root_device":false,"is_read_only":true}`,
 		configDrivePath)); err != nil {
-		fcCmd.Process.Kill()
-		vmCancel()
-		destroyTapDevice(tapName); e.pool.Release(guestIP)
-		os.RemoveAll(sandboxDir)
-		return engine.SandboxInfo{}, fmt.Errorf("set config drive: %w", err)
+		return info, fmt.Errorf("set config drive: %w", err)
 	}
 
 	// 6c. Attach volume drives (/dev/vdc, /dev/vdd, ...)
 	for i, vs := range spec.NewVolumes {
 		volPath := filepath.Join(sandboxDir, fmt.Sprintf("vol-%s.ext4", vs.Name))
 		driveID := fmt.Sprintf("vol%d", i)
-		if err := fcPut(client, fmt.Sprintf("/drives/%s", driveID), fmt.Sprintf(
+		if err = fcPut(client, fmt.Sprintf("/drives/%s", driveID), fmt.Sprintf(
 			`{"drive_id":%q,"path_on_host":%q,"is_root_device":false,"is_read_only":false}`,
 			driveID, volPath)); err != nil {
-			fcCmd.Process.Kill()
-			vmCancel()
-			destroyTapDevice(tapName); e.pool.Release(guestIP)
-			os.RemoveAll(sandboxDir)
-			return engine.SandboxInfo{}, fmt.Errorf("set volume drive %d: %w", i, err)
+			return info, fmt.Errorf("set volume drive %d: %w", i, err)
 		}
 	}
 
 	// 7. Boot
-	if err := fcPut(client, "/actions", `{"action_type":"InstanceStart"}`); err != nil {
-		fcCmd.Process.Kill()
-		vmCancel()
-		destroyTapDevice(tapName); e.pool.Release(guestIP)
-		os.RemoveAll(sandboxDir)
-		return engine.SandboxInfo{}, fmt.Errorf("start instance: %w", err)
+	if err = fcPut(client, "/actions", `{"action_type":"InstanceStart"}`); err != nil {
+		return info, fmt.Errorf("start instance: %w", err)
 	}
 
 	// 8. Wait for agent via TCP (kernel ip= already configured eth0).
-	// TCP is the primary channel — it survives snapshot/resume.
 	agentClient := agent.NewTCPClientWithAuth(guestIP, token)
-	if err := agentClient.WaitReady(ctx, 30*time.Second); err != nil {
-		fcCmd.Process.Kill()
-		vmCancel()
-		destroyTapDevice(tapName); e.pool.Release(guestIP)
-		os.RemoveAll(sandboxDir)
-		return engine.SandboxInfo{}, fmt.Errorf("agent not ready: %w", err)
+	if err = agentClient.WaitReady(ctx, 30*time.Second); err != nil {
+		return info, fmt.Errorf("agent not ready: %w", err)
 	}
 
 	vm := &VM{
