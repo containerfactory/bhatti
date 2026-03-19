@@ -651,26 +651,26 @@ func (e *Engine) VMState(id string) map[string]interface{} {
 
 // RestoreVM adds a VM to the engine's in-memory map from persisted state.
 // Used during startup recovery.
+//
+// The state map comes from either JSON unmarshal (all numbers are float64) or
+// SQLite (numbers may be int, int64, or float64 depending on the driver).
+// All extraction uses type-safe helpers to avoid panics on type mismatch.
 func (e *Engine) RestoreVM(id, name, status string, state map[string]interface{}) {
 	vm := &VM{
-		ID:         id,
-		Name:       name,
-		Status:     status,
-		RootfsPath: state["rootfs_path"].(string),
-		SocketPath: state["socket_path"].(string),
-		VsockPath:  state["vsock_path"].(string),
-		CID:        uint32(state["vsock_cid"].(int)),
-		TapDevice:  state["tap_device"].(string),
-		GuestIP:    state["guest_ip"].(string),
-		GuestMAC:   state["guest_mac"].(string),
-		VcpuCount:  int64(state["vcpu_count"].(float64)),
-		MemSizeMib: int64(state["mem_size_mib"].(int)),
-	}
-	if v, ok := state["snap_mem_path"].(string); ok {
-		vm.SnapMemPath = v
-	}
-	if v, ok := state["snap_vm_path"].(string); ok {
-		vm.SnapVMPath = v
+		ID:          id,
+		Name:        name,
+		Status:      status,
+		RootfsPath:  stateStr(state, "rootfs_path"),
+		SocketPath:  stateStr(state, "socket_path"),
+		VsockPath:   stateStr(state, "vsock_path"),
+		CID:         stateUint32(state, "vsock_cid"),
+		TapDevice:   stateStr(state, "tap_device"),
+		GuestIP:     stateStr(state, "guest_ip"),
+		GuestMAC:    stateStr(state, "guest_mac"),
+		VcpuCount:   stateInt64(state, "vcpu_count"),
+		MemSizeMib:  stateInt64(state, "mem_size_mib"),
+		SnapMemPath: stateStr(state, "snap_mem_path"),
+		SnapVMPath:  stateStr(state, "snap_vm_path"),
 	}
 
 	if status == "running" {
@@ -866,6 +866,43 @@ func (e *Engine) FileList(ctx context.Context, id, path string) ([]proto.FileInf
 	vm.stateMu.Unlock()
 
 	return ag.FileList(ctx, path)
+}
+
+// --- State extraction helpers (type-safe for JSON float64 / SQLite int) ---
+
+func stateStr(m map[string]interface{}, key string) string {
+	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+func stateInt64(m map[string]interface{}, key string) int64 {
+	switch v := m[key].(type) {
+	case int:
+		return int64(v)
+	case int64:
+		return v
+	case float64:
+		return int64(v)
+	case uint32:
+		return int64(v)
+	}
+	return 0
+}
+
+func stateUint32(m map[string]interface{}, key string) uint32 {
+	switch v := m[key].(type) {
+	case int:
+		return uint32(v)
+	case int64:
+		return uint32(v)
+	case float64:
+		return uint32(v)
+	case uint32:
+		return v
+	}
+	return 0
 }
 
 // --- Helpers ---
