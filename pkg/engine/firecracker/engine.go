@@ -1027,6 +1027,7 @@ func fcAPIClient(socketPath string) *http.Client {
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				return net.DialTimeout("unix", socketPath, 5*time.Second)
 			},
+			DisableKeepAlives: true, // one request per connection, avoids stale socket issues
 		},
 	}
 }
