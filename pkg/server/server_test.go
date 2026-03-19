@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -949,6 +950,80 @@ func TestHealthNoAuth(t *testing.T) {
 	decodeJSON(t, resp, &health)
 	if health["status"] != "ok" {
 		t.Fatalf("expected status ok, got %v", health["status"])
+	}
+}
+
+func TestExecStreamNDJSON(t *testing.T) {
+	_, ts := setup(t)
+	name := uniqueName(t, "ndjson")
+	_, sb := createTemplateAndSandbox(t, ts, name, nil)
+
+	// Request with Accept: application/x-ndjson
+	body, _ := json.Marshal(map[string]any{"cmd": []string{"echo", "streamed"}})
+	req, _ := http.NewRequest("POST", ts.URL+"/sandboxes/"+sb.ID+"/exec", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-token")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/x-ndjson")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/x-ndjson" {
+		t.Fatalf("expected Content-Type application/x-ndjson, got %q", ct)
+	}
+
+	// Parse NDJSON lines
+	var events []engine.StreamEvent
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		var e engine.StreamEvent
+		if err := json.Unmarshal(scanner.Bytes(), &e); err != nil {
+			t.Fatalf("parse NDJSON line: %v: %s", err, scanner.Text())
+		}
+		events = append(events, e)
+	}
+
+	var gotStdout, gotExit bool
+	for _, e := range events {
+		if e.Type == "stdout" && strings.Contains(e.Data, "streamed") {
+			gotStdout = true
+		}
+		if e.Type == "exit" && e.ExitCode != nil && *e.ExitCode == 0 {
+			gotExit = true
+		}
+	}
+	if !gotStdout {
+		t.Errorf("no stdout event with 'streamed', events: %+v", events)
+	}
+	if !gotExit {
+		t.Errorf("no exit event with code 0, events: %+v", events)
+	}
+}
+
+func TestExecStreamFallbackBuffered(t *testing.T) {
+	_, ts := setup(t)
+	name := uniqueName(t, "buffered")
+	_, sb := createTemplateAndSandbox(t, ts, name, nil)
+
+	// Request WITHOUT Accept: application/x-ndjson — should get buffered JSON
+	resp := doReq(t, ts, "POST", "/sandboxes/"+sb.ID+"/exec", map[string]any{
+		"cmd": []string{"echo", "buffered"},
+	})
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var result engine.ExecResult
+	decodeJSON(t, resp, &result)
+	if !strings.Contains(result.Stdout, "buffered") {
+		t.Fatalf("expected 'buffered' in stdout, got %q", result.Stdout)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", result.ExitCode)
 	}
 }
 

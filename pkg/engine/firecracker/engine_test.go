@@ -318,3 +318,135 @@ func TestShell(t *testing.T) {
 		}
 	}
 }
+
+// --- ExecStream Tests ---
+
+func TestExecStreamBasic(t *testing.T) {
+	eng := testEngine(t)
+	ctx := context.Background()
+
+	info, err := eng.Create(ctx, testSpec("stream-basic"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer eng.Destroy(ctx, info.ID)
+
+	var events []engine.StreamEvent
+	err = eng.ExecStream(ctx, info.ID, []string{"echo", "hello-stream"}, func(e engine.StreamEvent) {
+		events = append(events, e)
+	})
+	if err != nil {
+		t.Fatalf("ExecStream: %v", err)
+	}
+
+	// Should have at least a stdout event and an exit event
+	var gotStdout, gotExit bool
+	for _, e := range events {
+		if e.Type == "stdout" && strings.Contains(e.Data, "hello-stream") {
+			gotStdout = true
+		}
+		if e.Type == "exit" && e.ExitCode != nil && *e.ExitCode == 0 {
+			gotExit = true
+		}
+	}
+	if !gotStdout {
+		t.Errorf("missing stdout event, events: %+v", events)
+	}
+	if !gotExit {
+		t.Errorf("missing exit event, events: %+v", events)
+	}
+	t.Logf("✓ streaming exec: %d events", len(events))
+}
+
+func TestExecStreamStderr(t *testing.T) {
+	eng := testEngine(t)
+	ctx := context.Background()
+
+	info, err := eng.Create(ctx, testSpec("stream-stderr"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer eng.Destroy(ctx, info.ID)
+
+	var events []engine.StreamEvent
+	err = eng.ExecStream(ctx, info.ID, []string{"sh", "-c", "echo out; echo err >&2"}, func(e engine.StreamEvent) {
+		events = append(events, e)
+	})
+	if err != nil {
+		t.Fatalf("ExecStream: %v", err)
+	}
+
+	var gotStdout, gotStderr, gotExit bool
+	for _, e := range events {
+		if e.Type == "stdout" && strings.Contains(e.Data, "out") {
+			gotStdout = true
+		}
+		if e.Type == "stderr" && strings.Contains(e.Data, "err") {
+			gotStderr = true
+		}
+		if e.Type == "exit" {
+			gotExit = true
+		}
+	}
+	if !gotStdout || !gotStderr || !gotExit {
+		t.Errorf("stdout=%v stderr=%v exit=%v events=%+v", gotStdout, gotStderr, gotExit, events)
+	}
+	t.Log("✓ streaming exec separates stdout/stderr")
+}
+
+func TestExecStreamExitCode(t *testing.T) {
+	eng := testEngine(t)
+	ctx := context.Background()
+
+	info, err := eng.Create(ctx, testSpec("stream-exit"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer eng.Destroy(ctx, info.ID)
+
+	var exitCode *int
+	eng.ExecStream(ctx, info.ID, []string{"sh", "-c", "exit 42"}, func(e engine.StreamEvent) {
+		if e.Type == "exit" {
+			exitCode = e.ExitCode
+		}
+	})
+	if exitCode == nil || *exitCode != 42 {
+		t.Fatalf("expected exit code 42, got %v", exitCode)
+	}
+	t.Log("✓ streaming exec preserves exit code 42")
+}
+
+func TestExecStreamIncremental(t *testing.T) {
+	eng := testEngine(t)
+	ctx := context.Background()
+
+	info, err := eng.Create(ctx, testSpec("stream-incr"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer eng.Destroy(ctx, info.ID)
+
+	// Emit 3 lines with delays — events should arrive incrementally
+	var timestamps []time.Time
+	err = eng.ExecStream(ctx, info.ID, []string{
+		"sh", "-c", "echo line1; sleep 0.3; echo line2; sleep 0.3; echo line3",
+	}, func(e engine.StreamEvent) {
+		if e.Type == "stdout" {
+			timestamps = append(timestamps, time.Now())
+		}
+	})
+	if err != nil {
+		t.Fatalf("ExecStream: %v", err)
+	}
+
+	if len(timestamps) < 2 {
+		t.Fatalf("expected multiple stdout events, got %d", len(timestamps))
+	}
+
+	// The gap between first and last stdout should be > 0.4s (two 0.3s sleeps)
+	gap := timestamps[len(timestamps)-1].Sub(timestamps[0])
+	if gap < 400*time.Millisecond {
+		t.Errorf("events arrived too fast (%v) — may not be truly streaming", gap)
+	}
+	t.Logf("✓ streaming exec is incremental: %d stdout events over %v", len(timestamps), gap.Round(time.Millisecond))
+}

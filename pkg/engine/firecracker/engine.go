@@ -720,6 +720,59 @@ func (e *Engine) Exec(ctx context.Context, id string, cmd []string) (engine.Exec
 	return ag.Exec(ctx, cmd, nil, "")
 }
 
+// ExecStream implements engine.StreamExecEngine. It sends STDOUT/STDERR/EXIT
+// frames as StreamEvents via the callback as they arrive from the agent.
+func (e *Engine) ExecStream(ctx context.Context, id string, cmd []string, onEvent func(engine.StreamEvent)) error {
+	vm, err := e.getVM(id)
+	if err != nil {
+		return err
+	}
+
+	vm.stateMu.Lock()
+	if vm.Thermal != "hot" {
+		vm.stateMu.Unlock()
+		return fmt.Errorf("sandbox %q is not hot (thermal=%s)", id, vm.Thermal)
+	}
+	ag := vm.Agent
+	vm.stateMu.Unlock()
+
+	conn, err := ag.DialControl(ctx)
+	if err != nil {
+		return fmt.Errorf("agent connect: %w", err)
+	}
+	defer conn.Close()
+
+	if deadline, ok := ctx.Deadline(); ok {
+		conn.SetDeadline(deadline)
+	}
+
+	req := proto.ExecRequest{Argv: cmd}
+	if err := proto.SendJSON(conn, proto.EXEC_REQ, req); err != nil {
+		return fmt.Errorf("agent send exec: %w", err)
+	}
+
+	for {
+		msgType, payload, err := proto.ReadFrame(conn)
+		if err != nil {
+			return fmt.Errorf("agent read: %w", err)
+		}
+		switch msgType {
+		case proto.STDOUT:
+			onEvent(engine.StreamEvent{Type: "stdout", Data: string(payload)})
+		case proto.STDERR:
+			onEvent(engine.StreamEvent{Type: "stderr", Data: string(payload)})
+		case proto.EXIT:
+			code, _ := proto.ParseExitCode(payload)
+			c := int(code)
+			onEvent(engine.StreamEvent{Type: "exit", ExitCode: &c})
+			return nil
+		case proto.ERROR:
+			onEvent(engine.StreamEvent{Type: "error", Data: string(payload)})
+			return fmt.Errorf("agent: %s", payload)
+		}
+	}
+}
+
 func (e *Engine) Shell(ctx context.Context, id string) (engine.TerminalConn, error) {
 	vm, err := e.getVM(id)
 	if err != nil {

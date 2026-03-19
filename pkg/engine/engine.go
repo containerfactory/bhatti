@@ -77,6 +77,19 @@ type VMStateProvider interface {
 	RestoreVM(id, name, status string, state map[string]interface{})
 }
 
+// StreamEvent is emitted during streaming exec.
+type StreamEvent struct {
+	Type     string `json:"type"`               // "stdout", "stderr", "exit", "error"
+	Data     string `json:"data,omitempty"`      // output text
+	ExitCode *int   `json:"exit_code,omitempty"` // only for type="exit"
+}
+
+// StreamExecEngine is optionally implemented by engines that support
+// streaming exec output. Used by the NDJSON exec endpoint.
+type StreamExecEngine interface {
+	ExecStream(ctx context.Context, id string, cmd []string, onEvent func(StreamEvent)) error
+}
+
 // Engine is the sandbox lifecycle interface.
 type Engine interface {
 	Create(ctx context.Context, spec SandboxSpec) (SandboxInfo, error)

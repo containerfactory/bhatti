@@ -481,12 +481,64 @@ func (s *Server) handleSandboxExec(w http.ResponseWriter, r *http.Request, id st
 		errResp(w, 500, "wake sandbox: "+err.Error())
 		return
 	}
+
+	// Streaming NDJSON when requested via Accept header
+	if r.Header.Get("Accept") == "application/x-ndjson" {
+		s.handleSandboxExecStream(w, r, sb, req)
+		return
+	}
+
+	// Buffered JSON (existing behavior)
 	result, err := s.engine.Exec(r.Context(), sb.EngineID, req.Cmd)
 	if err != nil {
 		errResp(w, 500, err.Error())
 		return
 	}
 	writeJSON(w, 200, result)
+}
+
+// handleSandboxExecStream streams exec output as NDJSON (one JSON object per line).
+// Each line is flushed immediately so the client sees output in real time.
+func (s *Server) handleSandboxExecStream(w http.ResponseWriter, r *http.Request, sb *store.Sandbox, req execReq) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		errResp(w, 500, "streaming not supported")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(200)
+
+	enc := json.NewEncoder(w)
+
+	// If engine supports streaming, use it directly
+	if se, ok := s.engine.(engine.StreamExecEngine); ok {
+		se.ExecStream(r.Context(), sb.EngineID, req.Cmd, func(event engine.StreamEvent) {
+			enc.Encode(event)
+			flusher.Flush()
+		})
+		return
+	}
+
+	// Fallback: buffer then emit as NDJSON events
+	result, err := s.engine.Exec(r.Context(), sb.EngineID, req.Cmd)
+	if err != nil {
+		enc.Encode(engine.StreamEvent{Type: "error", Data: err.Error()})
+		flusher.Flush()
+		return
+	}
+	if result.Stdout != "" {
+		enc.Encode(engine.StreamEvent{Type: "stdout", Data: result.Stdout})
+		flusher.Flush()
+	}
+	if result.Stderr != "" {
+		enc.Encode(engine.StreamEvent{Type: "stderr", Data: result.Stderr})
+		flusher.Flush()
+	}
+	code := result.ExitCode
+	enc.Encode(engine.StreamEvent{Type: "exit", ExitCode: &code})
+	flusher.Flush()
 }
 
 var upgrader = websocket.Upgrader{
