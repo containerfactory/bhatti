@@ -420,7 +420,10 @@ func (c *AgentClient) ShellSession(ctx context.Context, argv []string, env map[s
 		return nil, nil, fmt.Errorf("expected SESSION_INFO, got 0x%02x", msgType)
 	}
 	var info proto.SessionInfo
-	json.Unmarshal(payload, &info)
+	if err := json.Unmarshal(payload, &info); err != nil {
+		conn.Close()
+		return nil, nil, fmt.Errorf("unmarshal session info: %w", err)
+	}
 
 	return &info, &agentTermConn{conn: conn}, nil
 }
@@ -453,7 +456,10 @@ func (c *AgentClient) SessionAttach(ctx context.Context, sessionID string) (*pro
 		return nil, nil, fmt.Errorf("expected SESSION_INFO, got 0x%02x", msgType)
 	}
 	var info proto.SessionInfo
-	json.Unmarshal(payload, &info)
+	if err := json.Unmarshal(payload, &info); err != nil {
+		conn.Close()
+		return nil, nil, fmt.Errorf("unmarshal session info: %w", err)
+	}
 
 	return &info, &agentTermConn{conn: conn}, nil
 }
@@ -490,7 +496,9 @@ func (c *AgentClient) FileRead(ctx context.Context, path string, w io.Writer) (s
 		Size int64  `json:"size"`
 		Mode string `json:"mode"`
 	}
-	json.Unmarshal(payload, &resp)
+	if err := json.Unmarshal(payload, &resp); err != nil {
+		return 0, "", fmt.Errorf("unmarshal file read resp: %w", err)
+	}
 
 	// Read STDOUT frames until EXIT
 	var written int64
@@ -581,7 +589,9 @@ func (c *AgentClient) FileStat(ctx context.Context, path string) (*proto.FileInf
 		return nil, fmt.Errorf("expected FILE_STAT_RESP, got 0x%02x", msgType)
 	}
 	var info proto.FileInfo
-	json.Unmarshal(payload, &info)
+	if err := json.Unmarshal(payload, &info); err != nil {
+		return nil, fmt.Errorf("unmarshal file stat: %w", err)
+	}
 	return &info, nil
 }
 
@@ -612,7 +622,9 @@ func (c *AgentClient) FileList(ctx context.Context, path string) ([]proto.FileIn
 		return nil, fmt.Errorf("expected FILE_LS_RESP, got 0x%02x", msgType)
 	}
 	var files []proto.FileInfo
-	json.Unmarshal(payload, &files)
+	if err := json.Unmarshal(payload, &files); err != nil {
+		return nil, fmt.Errorf("unmarshal file list: %w", err)
+	}
 	return files, nil
 }
 

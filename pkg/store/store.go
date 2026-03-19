@@ -228,9 +228,15 @@ func scanTemplate(s scanner) (*Template, error) {
 	if err != nil {
 		return nil, err
 	}
-	json.Unmarshal([]byte(secretsJSON), &t.Secrets)
-	json.Unmarshal([]byte(labelsJSON), &t.Labels)
-	json.Unmarshal([]byte(mountsJSON), &t.Mounts)
+	if err := json.Unmarshal([]byte(secretsJSON), &t.Secrets); err != nil {
+		return nil, fmt.Errorf("unmarshal secrets: %w", err)
+	}
+	if err := json.Unmarshal([]byte(labelsJSON), &t.Labels); err != nil {
+		return nil, fmt.Errorf("unmarshal labels: %w", err)
+	}
+	if err := json.Unmarshal([]byte(mountsJSON), &t.Mounts); err != nil {
+		return nil, fmt.Errorf("unmarshal mounts: %w", err)
+	}
 	return &t, nil
 }
 

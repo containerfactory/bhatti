@@ -97,7 +97,10 @@ func handleControlConnection(conn net.Conn) {
 		var req struct {
 			SessionID string `json:"session_id"`
 		}
-		json.Unmarshal(payload, &req)
+		if err := json.Unmarshal(payload, &req); err != nil {
+			proto.WriteFrame(conn, proto.ERROR, []byte("bad kill request"))
+			return
+		}
 		s := getSession(req.SessionID)
 		if s == nil {
 			proto.WriteFrame(conn, proto.ERROR, []byte("session not found"))
