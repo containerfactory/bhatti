@@ -853,7 +853,7 @@ func (e *Engine) SessionList(ctx context.Context, id string) ([]proto.SessionInf
 
 // --- File Operations ---
 
-func (e *Engine) FileRead(ctx context.Context, id, path string, w io.Writer) (int64, string, error) {
+func (e *Engine) FileRead(ctx context.Context, id, path string, w io.Writer, opts ...agent.FileReadOpts) (int64, string, error) {
 	vm, err := e.getVM(id)
 	if err != nil {
 		return 0, "", err
@@ -867,7 +867,7 @@ func (e *Engine) FileRead(ctx context.Context, id, path string, w io.Writer) (in
 	ag := vm.Agent
 	vm.stateMu.Unlock()
 
-	return ag.FileRead(ctx, path, w)
+	return ag.FileRead(ctx, path, w, opts...)
 }
 
 func (e *Engine) FileWrite(ctx context.Context, id, path, mode string, size int64, r io.Reader) error {

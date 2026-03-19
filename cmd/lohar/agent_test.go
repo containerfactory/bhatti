@@ -1541,3 +1541,246 @@ func TestAgentForwardRefused(t *testing.T) {
 		t.Errorf("message: %v, want 'refused'", resp.Message)
 	}
 }
+
+// --- File Read Truncation Tests ---
+
+// writeNLineFile writes a file with N numbered lines ("line 1\n", "line 2\n", ...).
+func writeNLineFile(t *testing.T, ctrl, path string, n int) {
+	t.Helper()
+	var content bytes.Buffer
+	for i := 1; i <= n; i++ {
+		fmt.Fprintf(&content, "line %d\n", i)
+	}
+	conn := dialControl(t, ctrl)
+	defer conn.Close()
+	proto.SendJSON(conn, proto.FILE_WRITE_REQ, map[string]any{
+		"path": path, "mode": "0644", "size": content.Len(),
+	})
+	proto.WriteFrame(conn, proto.STDIN, content.Bytes())
+	msgType, payload, _ := proto.ReadFrame(conn)
+	if msgType == proto.ERROR {
+		t.Fatalf("write error: %s", payload)
+	}
+}
+
+// readFileWithOpts reads a file through the agent with truncation options.
+func readFileWithOpts(t *testing.T, ctrl, path string, offset, limit, maxBytes int) string {
+	t.Helper()
+	conn := dialControl(t, ctrl)
+	defer conn.Close()
+
+	req := map[string]any{"path": path}
+	if offset > 0 {
+		req["offset"] = offset
+	}
+	if limit > 0 {
+		req["limit"] = limit
+	}
+	if maxBytes > 0 {
+		req["max_bytes"] = maxBytes
+	}
+	proto.SendJSON(conn, proto.FILE_READ_REQ, req)
+
+	// Read FILE_READ_RESP
+	msgType, payload, err := proto.ReadFrame(conn)
+	if err != nil {
+		t.Fatalf("read resp: %v", err)
+	}
+	if msgType == proto.ERROR {
+		t.Fatalf("read error: %s", payload)
+	}
+
+	// Collect STDOUT frames until EXIT
+	var buf bytes.Buffer
+	for {
+		msgType, payload, err = proto.ReadFrame(conn)
+		if err != nil {
+			t.Fatalf("read frame: %v", err)
+		}
+		if msgType == proto.STDOUT {
+			buf.Write(payload)
+		}
+		if msgType == proto.EXIT {
+			break
+		}
+	}
+	return buf.String()
+}
+
+func TestAgentFileReadWithLimit(t *testing.T) {
+	ctrl, _, cleanup := startTestAgent(t)
+	defer cleanup()
+
+	path := filepath.Join(t.TempDir(), "lines100.txt")
+	writeNLineFile(t, ctrl, path, 100)
+
+	content := readFileWithOpts(t, ctrl, path, 0, 10, 0)
+	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	if len(lines) != 10 {
+		t.Fatalf("expected 10 lines, got %d: %q", len(lines), content)
+	}
+	if lines[0] != "line 1" {
+		t.Errorf("first line: %q, want 'line 1'", lines[0])
+	}
+	if lines[9] != "line 10" {
+		t.Errorf("last line: %q, want 'line 10'", lines[9])
+	}
+}
+
+func TestAgentFileReadWithOffset(t *testing.T) {
+	ctrl, _, cleanup := startTestAgent(t)
+	defer cleanup()
+
+	path := filepath.Join(t.TempDir(), "lines100.txt")
+	writeNLineFile(t, ctrl, path, 100)
+
+	content := readFileWithOpts(t, ctrl, path, 50, 0, 0)
+	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	if len(lines) != 51 { // lines 50-100
+		t.Fatalf("expected 51 lines, got %d", len(lines))
+	}
+	if lines[0] != "line 50" {
+		t.Errorf("first line: %q, want 'line 50'", lines[0])
+	}
+	if lines[len(lines)-1] != "line 100" {
+		t.Errorf("last line: %q, want 'line 100'", lines[len(lines)-1])
+	}
+}
+
+func TestAgentFileReadWithOffsetAndLimit(t *testing.T) {
+	ctrl, _, cleanup := startTestAgent(t)
+	defer cleanup()
+
+	path := filepath.Join(t.TempDir(), "lines100.txt")
+	writeNLineFile(t, ctrl, path, 100)
+
+	content := readFileWithOpts(t, ctrl, path, 50, 10, 0)
+	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	if len(lines) != 10 { // lines 50-59
+		t.Fatalf("expected 10 lines, got %d: %q", len(lines), content)
+	}
+	if lines[0] != "line 50" {
+		t.Errorf("first line: %q, want 'line 50'", lines[0])
+	}
+	if lines[9] != "line 59" {
+		t.Errorf("last line: %q, want 'line 59'", lines[9])
+	}
+}
+
+func TestAgentFileReadWithMaxBytes(t *testing.T) {
+	ctrl, _, cleanup := startTestAgent(t)
+	defer cleanup()
+
+	// Each line is "line N\n" — "line 1\n" = 7 bytes, up to "line 10\n" = 8 bytes
+	path := filepath.Join(t.TempDir(), "lines100.txt")
+	writeNLineFile(t, ctrl, path, 100)
+
+	// Budget of 50 bytes should return roughly 6-7 lines
+	content := readFileWithOpts(t, ctrl, path, 0, 0, 50)
+	if len(content) > 50 {
+		t.Fatalf("expected <= 50 bytes, got %d", len(content))
+	}
+	if len(content) == 0 {
+		t.Fatal("expected some content, got empty")
+	}
+	t.Logf("max_bytes=50: got %d bytes, %d lines", len(content), strings.Count(content, "\n"))
+}
+
+func TestAgentFileReadLimitAndMaxBytesWhicheverFirst(t *testing.T) {
+	ctrl, _, cleanup := startTestAgent(t)
+	defer cleanup()
+
+	path := filepath.Join(t.TempDir(), "lines100.txt")
+	writeNLineFile(t, ctrl, path, 100)
+
+	// limit=2000 but max_bytes=50 — max_bytes should win
+	content := readFileWithOpts(t, ctrl, path, 0, 2000, 50)
+	if len(content) > 50 {
+		t.Fatalf("expected max_bytes to cap at 50 bytes, got %d", len(content))
+	}
+
+	// limit=3 but max_bytes=50000 — limit should win
+	content = readFileWithOpts(t, ctrl, path, 0, 3, 50000)
+	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected limit=3 to cap at 3 lines, got %d", len(lines))
+	}
+}
+
+func TestAgentFileReadLimitZeroFullFile(t *testing.T) {
+	ctrl, _, cleanup := startTestAgent(t)
+	defer cleanup()
+
+	path := filepath.Join(t.TempDir(), "lines20.txt")
+	writeNLineFile(t, ctrl, path, 20)
+
+	// limit=0, max_bytes=0 → full file (backward compat)
+	content := readFileWithOpts(t, ctrl, path, 0, 0, 0)
+	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	if len(lines) != 20 {
+		t.Fatalf("expected 20 lines, got %d", len(lines))
+	}
+}
+
+func TestAgentFileReadOffsetBeyondEOF(t *testing.T) {
+	ctrl, _, cleanup := startTestAgent(t)
+	defer cleanup()
+
+	path := filepath.Join(t.TempDir(), "lines10.txt")
+	writeNLineFile(t, ctrl, path, 10)
+
+	// Offset past end of file → empty content, no error
+	content := readFileWithOpts(t, ctrl, path, 9999, 10, 0)
+	if content != "" {
+		t.Fatalf("expected empty content, got %q", content)
+	}
+}
+
+func TestAgentFileReadLargeFileWithLimit(t *testing.T) {
+	ctrl, _, cleanup := startTestAgent(t)
+	defer cleanup()
+
+	// Write 100K lines directly to disk (not through agent — too slow)
+	path := filepath.Join(t.TempDir(), "huge.txt")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 100000; i++ {
+		fmt.Fprintf(f, "line %d\n", i)
+	}
+	f.Close()
+
+	// Read with limit=2000 — should only get 2000 lines, not 100K
+	content := readFileWithOpts(t, ctrl, path, 0, 2000, 0)
+	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	if len(lines) != 2000 {
+		t.Fatalf("expected 2000 lines, got %d", len(lines))
+	}
+	if lines[0] != "line 1" {
+		t.Errorf("first line: %q", lines[0])
+	}
+	if lines[1999] != "line 2000" {
+		t.Errorf("last line: %q", lines[1999])
+	}
+	// Verify we didn't transfer the full file
+	t.Logf("✓ 100K-line file, limit=2000: got %d bytes (not ~1.1MB)", len(content))
+}
+
+func TestAgentFileReadMaxBytesMidLine(t *testing.T) {
+	ctrl, _, cleanup := startTestAgent(t)
+	defer cleanup()
+
+	path := filepath.Join(t.TempDir(), "lines.txt")
+	writeNLineFile(t, ctrl, path, 10)
+
+	// Budget that cuts mid-line: "line 1\n" = 7 bytes, budget = 10
+	// Should get "line 1\n" (7) + first 3 bytes of "line 2\n"
+	content := readFileWithOpts(t, ctrl, path, 0, 0, 10)
+	if len(content) != 10 {
+		t.Fatalf("expected exactly 10 bytes, got %d: %q", len(content), content)
+	}
+	if !strings.HasPrefix(content, "line 1\n") {
+		t.Errorf("expected to start with 'line 1\\n', got %q", content)
+	}
+}

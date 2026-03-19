@@ -16,6 +16,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/sahil-shubham/bhatti/pkg/agent"
 	"github.com/sahil-shubham/bhatti/pkg/agent/proto"
 	"github.com/sahil-shubham/bhatti/pkg/engine"
 	"github.com/sahil-shubham/bhatti/pkg/store"
@@ -961,7 +962,7 @@ func (s *Server) handleProxyWS(w http.ResponseWriter, r *http.Request, engineID 
 
 // FileEngine is optionally implemented by engines that support direct file operations.
 type FileEngine interface {
-	FileRead(ctx context.Context, id, path string, w io.Writer) (int64, string, error)
+	FileRead(ctx context.Context, id, path string, w io.Writer, opts ...agent.FileReadOpts) (int64, string, error)
 	FileWrite(ctx context.Context, id, path, mode string, size int64, r io.Reader) error
 	FileStat(ctx context.Context, id, path string) (*proto.FileInfo, error)
 	FileList(ctx context.Context, id, path string) ([]proto.FileInfo, error)
@@ -1001,20 +1002,38 @@ func (s *Server) handleSandboxFiles(w http.ResponseWriter, r *http.Request, id s
 			}
 			writeJSON(w, 200, files)
 		} else {
-			// Bug #6: Stat first so we can set Content-Length and detect errors
-			// before writing any response body. Mid-stream errors will cause a
-			// short response that the client detects via Content-Length mismatch.
+			// Parse truncation parameters
+			offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+			limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+			maxBytes, _ := strconv.Atoi(r.URL.Query().Get("max_bytes"))
+			truncating := limit > 0 || maxBytes > 0
+
+			// Stat first to detect errors before writing response body.
 			info, err := fe.FileStat(r.Context(), sb.EngineID, path)
 			if err != nil {
 				errResp(w, 500, err.Error())
 				return
 			}
 			w.Header().Set("Content-Type", "application/octet-stream")
-			w.Header().Set("Content-Length", fmt.Sprint(info.Size))
+			// Only set Content-Length for full reads — truncated reads
+			// produce an unknown final size.
+			if !truncating {
+				w.Header().Set("Content-Length", fmt.Sprint(info.Size))
+			}
+			// Report the total file size so the client knows if content
+			// was truncated vs the full file.
+			w.Header().Set("X-File-Size", fmt.Sprint(info.Size))
 			w.WriteHeader(200)
-			fe.FileRead(r.Context(), sb.EngineID, path, w)
-			// If FileRead fails mid-stream, the client sees a short body
-			// vs Content-Length — standard HTTP error detection.
+
+			if truncating {
+				fe.FileRead(r.Context(), sb.EngineID, path, w, agent.FileReadOpts{
+					Offset:   offset,
+					Limit:    limit,
+					MaxBytes: maxBytes,
+				})
+			} else {
+				fe.FileRead(r.Context(), sb.EngineID, path, w)
+			}
 		}
 	case http.MethodPut:
 		size := r.ContentLength

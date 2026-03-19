@@ -470,7 +470,14 @@ func (c *AgentClient) SessionAttach(ctx context.Context, sessionID string) (*pro
 
 // FileRead reads a file from the guest and writes its contents to w.
 // Returns the file size and mode.
-func (c *AgentClient) FileRead(ctx context.Context, path string, w io.Writer) (size int64, mode string, err error) {
+// FileReadOpts controls server-side truncation for file reads.
+type FileReadOpts struct {
+	Offset   int // 1-indexed line number to start from (0 = beginning)
+	Limit    int // max lines to return (0 = unlimited)
+	MaxBytes int // max bytes to return (0 = unlimited)
+}
+
+func (c *AgentClient) FileRead(ctx context.Context, path string, w io.Writer, opts ...FileReadOpts) (size int64, mode string, err error) {
 	conn, err := c.DialControl(ctx)
 	if err != nil {
 		return 0, "", err
@@ -481,7 +488,20 @@ func (c *AgentClient) FileRead(ctx context.Context, path string, w io.Writer) (s
 		conn.SetDeadline(deadline)
 	}
 
-	if err := proto.SendJSON(conn, proto.FILE_READ_REQ, map[string]string{"path": path}); err != nil {
+	reqPayload := map[string]any{"path": path}
+	if len(opts) > 0 {
+		o := opts[0]
+		if o.Offset > 0 {
+			reqPayload["offset"] = o.Offset
+		}
+		if o.Limit > 0 {
+			reqPayload["limit"] = o.Limit
+		}
+		if o.MaxBytes > 0 {
+			reqPayload["max_bytes"] = o.MaxBytes
+		}
+	}
+	if err := proto.SendJSON(conn, proto.FILE_READ_REQ, reqPayload); err != nil {
 		return 0, "", fmt.Errorf("send file read: %w", err)
 	}
 

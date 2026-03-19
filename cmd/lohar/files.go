@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -15,7 +16,10 @@ import (
 
 func handleFileRead(conn net.Conn, payload []byte) {
 	var req struct {
-		Path string `json:"path"`
+		Path     string `json:"path"`
+		Offset   int    `json:"offset,omitempty"`    // 1-indexed line, default 0 (start)
+		Limit    int    `json:"limit,omitempty"`     // max lines, 0 = unlimited
+		MaxBytes int    `json:"max_bytes,omitempty"` // max bytes, 0 = unlimited
 	}
 	if err := json.Unmarshal(payload, &req); err != nil {
 		proto.WriteFrame(conn, proto.ERROR, []byte(fmt.Sprintf("bad request: %v", err)))
@@ -35,14 +39,13 @@ func handleFileRead(conn net.Conn, payload []byte) {
 		return
 	}
 
-	// Bug #3: Reject directories — use ls=true for directory listings
+	// Reject directories — use ls=true for directory listings
 	if info.IsDir() {
 		proto.WriteFrame(conn, proto.ERROR, []byte(fmt.Sprintf("%s is a directory", req.Path)))
 		return
 	}
 
-	// Bug #4: Reject non-regular files (devices, pipes, sockets) to prevent
-	// infinite reads on /dev/urandom, /dev/zero, etc.
+	// Reject non-regular files (devices, pipes, sockets)
 	if !info.Mode().IsRegular() {
 		proto.WriteFrame(conn, proto.ERROR, []byte(fmt.Sprintf("%s is not a regular file", req.Path)))
 		return
@@ -53,6 +56,13 @@ func handleFileRead(conn net.Conn, payload []byte) {
 		"mode": fmt.Sprintf("%04o", info.Mode().Perm()),
 	})
 
+	// Truncated read: line-based with offset/limit/max_bytes
+	if req.Offset > 0 || req.Limit > 0 || req.MaxBytes > 0 {
+		handleFileReadTruncated(conn, f, req.Offset, req.Limit, req.MaxBytes)
+		return
+	}
+
+	// Full read (existing path, backward compatible)
 	buf := make([]byte, 32768)
 	for {
 		n, err := f.Read(buf)
@@ -63,6 +73,54 @@ func handleFileRead(conn net.Conn, payload []byte) {
 			break
 		}
 	}
+	exit := proto.ExitPayload(0)
+	proto.WriteFrame(conn, proto.EXIT, exit[:])
+}
+
+// handleFileReadTruncated reads a file line-by-line, applying offset (1-indexed),
+// limit (max lines), and max_bytes (byte budget) constraints. Whichever limit
+// is hit first stops the read.
+func handleFileReadTruncated(conn net.Conn, f *os.File, offset, limit, maxBytes int) {
+	if offset < 1 {
+		offset = 1
+	}
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 256*1024), 256*1024) // 256KB max line
+
+	lineNum := 0
+	sentLines := 0
+	sentBytes := 0
+
+	for scanner.Scan() {
+		lineNum++
+		if lineNum < offset {
+			continue
+		}
+		if limit > 0 && sentLines >= limit {
+			break
+		}
+
+		line := scanner.Bytes()
+		// Append newline (scanner strips it)
+		out := make([]byte, len(line)+1)
+		copy(out, line)
+		out[len(line)] = '\n'
+
+		// Check byte budget before sending
+		if maxBytes > 0 && sentBytes+len(out) > maxBytes {
+			remaining := maxBytes - sentBytes
+			if remaining > 0 {
+				proto.WriteFrame(conn, proto.STDOUT, out[:remaining])
+			}
+			break
+		}
+
+		proto.WriteFrame(conn, proto.STDOUT, out)
+		sentLines++
+		sentBytes += len(out)
+	}
+
 	exit := proto.ExitPayload(0)
 	proto.WriteFrame(conn, proto.EXIT, exit[:])
 }
