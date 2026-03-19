@@ -44,6 +44,19 @@ type Engine struct {
 
 // VM holds per-sandbox state.
 type VM struct {
+	// stateMu protects all mutable fields below. The engine-level
+	// sync.RWMutex (e.mu) protects the vms map — not individual VM state.
+	//
+	// Lock discipline:
+	//   - Short operations (Exec, Pause, Resume, Status, FileRead, etc.):
+	//     hold stateMu for the entire operation.
+	//   - Long-lived operations (Shell, Tunnel):
+	//     hold stateMu only to validate state and capture the Agent reference,
+	//     then release before the blocking call. The Agent pointer is safe to
+	//     use after release because it's only replaced during Start() which
+	//     holds stateMu.
+	stateMu     sync.Mutex
+
 	ID          string
 	Name        string
 	SocketPath  string // Firecracker API socket
@@ -382,6 +395,10 @@ func (e *Engine) Stop(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+
+	vm.stateMu.Lock()
+	defer vm.stateMu.Unlock()
+
 	if vm.Status != "running" {
 		return fmt.Errorf("sandbox %q is not running", id)
 	}
@@ -426,6 +443,10 @@ func (e *Engine) Pause(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+
+	vm.stateMu.Lock()
+	defer vm.stateMu.Unlock()
+
 	if vm.Thermal != "hot" {
 		return fmt.Errorf("sandbox %q is not hot (thermal=%s)", id, vm.Thermal)
 	}
@@ -443,6 +464,10 @@ func (e *Engine) Resume(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+
+	vm.stateMu.Lock()
+	defer vm.stateMu.Unlock()
+
 	if vm.Thermal != "warm" {
 		return fmt.Errorf("sandbox %q is not warm (thermal=%s)", id, vm.Thermal)
 	}
@@ -460,6 +485,8 @@ func (e *Engine) ThermalState(id string) string {
 	if err != nil {
 		return ""
 	}
+	vm.stateMu.Lock()
+	defer vm.stateMu.Unlock()
 	return vm.Thermal
 }
 
@@ -469,16 +496,28 @@ func (e *Engine) Activity(ctx context.Context, id string) (*proto.ActivityInfo, 
 	if err != nil {
 		return nil, err
 	}
-	return vm.Agent.Activity(ctx)
+
+	vm.stateMu.Lock()
+	ag := vm.Agent
+	vm.stateMu.Unlock()
+
+	return ag.Activity(ctx)
 }
 
 // EnsureHot brings a VM to "hot" state from any thermal state.
+// Note: reads Thermal under lock but delegates to Resume/Start which
+// acquire the lock themselves — no nested locking.
 func (e *Engine) EnsureHot(ctx context.Context, id string) error {
 	vm, err := e.getVM(id)
 	if err != nil {
 		return err
 	}
-	switch vm.Thermal {
+
+	vm.stateMu.Lock()
+	thermal := vm.Thermal
+	vm.stateMu.Unlock()
+
+	switch thermal {
 	case "hot":
 		return nil
 	case "warm":
@@ -496,6 +535,10 @@ func (e *Engine) Start(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+
+	vm.stateMu.Lock()
+	defer vm.stateMu.Unlock()
+
 	if vm.SnapMemPath == "" {
 		return fmt.Errorf("sandbox %q has no snapshot to resume from", id)
 	}
@@ -525,9 +568,6 @@ func (e *Engine) Start(ctx context.Context, id string) error {
 
 	client := fcAPIClient(newSocketPath)
 
-	// Load snapshot and resume. The snapshot contains all device config.
-	// The backing resources (rootfs file, TAP device, vsock UDS path) must
-	// exist at the same paths as when the snapshot was created.
 	if err := fcPut(client, "/snapshot/load", fmt.Sprintf(
 		`{"snapshot_path":%q,"mem_backend":{"backend_path":%q,"backend_type":"File"},"resume_vm":true}`,
 		vm.SnapVMPath, vm.SnapMemPath)); err != nil {
@@ -564,6 +604,8 @@ func (e *Engine) Destroy(ctx context.Context, id string) error {
 		return err
 	}
 
+	vm.stateMu.Lock()
+
 	if vm.Status == "running" && vm.cmd != nil {
 		vm.cmd.Process.Kill()
 		vm.cmd.Wait()
@@ -578,7 +620,10 @@ func (e *Engine) Destroy(ctx context.Context, id string) error {
 		e.pool.Release(vm.GuestIP)
 	}
 
-	os.RemoveAll(filepath.Dir(vm.RootfsPath))
+	rootfsDir := filepath.Dir(vm.RootfsPath)
+	vm.stateMu.Unlock()
+
+	os.RemoveAll(rootfsDir)
 
 	e.mu.Lock()
 	delete(e.vms, id)
@@ -593,6 +638,8 @@ func (e *Engine) Status(ctx context.Context, id string) (engine.SandboxInfo, err
 	if err != nil {
 		return engine.SandboxInfo{}, err
 	}
+	vm.stateMu.Lock()
+	defer vm.stateMu.Unlock()
 	return engine.SandboxInfo{
 		ID: vm.ID, Name: vm.Name, Status: vm.Status,
 		IP: vm.GuestIP, EngineID: vm.ID,
@@ -606,6 +653,8 @@ func (e *Engine) VMState(id string) map[string]interface{} {
 	if err != nil {
 		return nil
 	}
+	vm.stateMu.Lock()
+	defer vm.stateMu.Unlock()
 	return map[string]interface{}{
 		"rootfs_path":   vm.RootfsPath,
 		"snap_mem_path": vm.SnapMemPath,
@@ -680,10 +729,16 @@ func (e *Engine) Exec(ctx context.Context, id string, cmd []string) (engine.Exec
 	if err != nil {
 		return engine.ExecResult{}, err
 	}
+
+	vm.stateMu.Lock()
 	if vm.Thermal != "hot" {
+		vm.stateMu.Unlock()
 		return engine.ExecResult{}, fmt.Errorf("sandbox %q is not hot (thermal=%s)", id, vm.Thermal)
 	}
-	return vm.Agent.Exec(ctx, cmd, nil, "")
+	ag := vm.Agent
+	vm.stateMu.Unlock()
+
+	return ag.Exec(ctx, cmd, nil, "")
 }
 
 func (e *Engine) Shell(ctx context.Context, id string) (engine.TerminalConn, error) {
@@ -691,10 +746,17 @@ func (e *Engine) Shell(ctx context.Context, id string) (engine.TerminalConn, err
 	if err != nil {
 		return nil, err
 	}
+
+	// Capture agent ref under lock, release before long-lived Shell call.
+	vm.stateMu.Lock()
 	if vm.Thermal != "hot" {
+		vm.stateMu.Unlock()
 		return nil, fmt.Errorf("sandbox %q is not hot (thermal=%s)", id, vm.Thermal)
 	}
-	return vm.Agent.Shell(ctx, []string{"/bin/zsh", "-li"}, map[string]string{
+	ag := vm.Agent
+	vm.stateMu.Unlock()
+
+	return ag.Shell(ctx, []string{"/bin/zsh", "-li"}, map[string]string{
 		"TERM": "xterm-256color",
 	}, 24, 80)
 }
@@ -704,10 +766,16 @@ func (e *Engine) ListeningPorts(ctx context.Context, id string) ([]int, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	vm.stateMu.Lock()
 	if vm.Thermal != "hot" {
+		vm.stateMu.Unlock()
 		return nil, fmt.Errorf("sandbox %q is not hot (thermal=%s)", id, vm.Thermal)
 	}
-	result, err := vm.Agent.Exec(ctx, []string{"ss", "-tln", "--no-header"}, nil, "")
+	ag := vm.Agent
+	vm.stateMu.Unlock()
+
+	result, err := ag.Exec(ctx, []string{"ss", "-tln", "--no-header"}, nil, "")
 	if err != nil {
 		return nil, err
 	}
@@ -719,10 +787,17 @@ func (e *Engine) Tunnel(ctx context.Context, id string, port int) (io.ReadWriteC
 	if err != nil {
 		return nil, err
 	}
+
+	// Capture agent ref under lock, release before long-lived Tunnel call.
+	vm.stateMu.Lock()
 	if vm.Thermal != "hot" {
+		vm.stateMu.Unlock()
 		return nil, fmt.Errorf("sandbox %q is not hot (thermal=%s)", id, vm.Thermal)
 	}
-	return vm.Agent.Forward(ctx, uint16(port))
+	ag := vm.Agent
+	vm.stateMu.Unlock()
+
+	return ag.Forward(ctx, uint16(port))
 }
 
 // --- Session Operations ---
@@ -732,10 +807,16 @@ func (e *Engine) SessionList(ctx context.Context, id string) ([]proto.SessionInf
 	if err != nil {
 		return nil, err
 	}
+
+	vm.stateMu.Lock()
 	if vm.Thermal != "hot" {
+		vm.stateMu.Unlock()
 		return nil, fmt.Errorf("sandbox %q is not hot (thermal=%s)", id, vm.Thermal)
 	}
-	return vm.Agent.SessionList(ctx)
+	ag := vm.Agent
+	vm.stateMu.Unlock()
+
+	return ag.SessionList(ctx)
 }
 
 // --- File Operations ---
@@ -745,10 +826,16 @@ func (e *Engine) FileRead(ctx context.Context, id, path string, w io.Writer) (in
 	if err != nil {
 		return 0, "", err
 	}
+
+	vm.stateMu.Lock()
 	if vm.Thermal != "hot" {
+		vm.stateMu.Unlock()
 		return 0, "", fmt.Errorf("sandbox %q is not hot (thermal=%s)", id, vm.Thermal)
 	}
-	return vm.Agent.FileRead(ctx, path, w)
+	ag := vm.Agent
+	vm.stateMu.Unlock()
+
+	return ag.FileRead(ctx, path, w)
 }
 
 func (e *Engine) FileWrite(ctx context.Context, id, path, mode string, size int64, r io.Reader) error {
@@ -756,10 +843,16 @@ func (e *Engine) FileWrite(ctx context.Context, id, path, mode string, size int6
 	if err != nil {
 		return err
 	}
+
+	vm.stateMu.Lock()
 	if vm.Thermal != "hot" {
+		vm.stateMu.Unlock()
 		return fmt.Errorf("sandbox %q is not hot (thermal=%s)", id, vm.Thermal)
 	}
-	return vm.Agent.FileWrite(ctx, path, mode, size, r)
+	ag := vm.Agent
+	vm.stateMu.Unlock()
+
+	return ag.FileWrite(ctx, path, mode, size, r)
 }
 
 func (e *Engine) FileStat(ctx context.Context, id, path string) (*proto.FileInfo, error) {
@@ -767,10 +860,16 @@ func (e *Engine) FileStat(ctx context.Context, id, path string) (*proto.FileInfo
 	if err != nil {
 		return nil, err
 	}
+
+	vm.stateMu.Lock()
 	if vm.Thermal != "hot" {
+		vm.stateMu.Unlock()
 		return nil, fmt.Errorf("sandbox %q is not hot (thermal=%s)", id, vm.Thermal)
 	}
-	return vm.Agent.FileStat(ctx, path)
+	ag := vm.Agent
+	vm.stateMu.Unlock()
+
+	return ag.FileStat(ctx, path)
 }
 
 func (e *Engine) FileList(ctx context.Context, id, path string) ([]proto.FileInfo, error) {
@@ -778,10 +877,16 @@ func (e *Engine) FileList(ctx context.Context, id, path string) ([]proto.FileInf
 	if err != nil {
 		return nil, err
 	}
+
+	vm.stateMu.Lock()
 	if vm.Thermal != "hot" {
+		vm.stateMu.Unlock()
 		return nil, fmt.Errorf("sandbox %q is not hot (thermal=%s)", id, vm.Thermal)
 	}
-	return vm.Agent.FileList(ctx, path)
+	ag := vm.Agent
+	vm.stateMu.Unlock()
+
+	return ag.FileList(ctx, path)
 }
 
 // --- Helpers ---
