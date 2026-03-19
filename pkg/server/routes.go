@@ -78,6 +78,7 @@ func floatOrZero(m map[string]interface{}, k string) float64 {
 }
 
 func (s *Server) routes() {
+	s.mux.HandleFunc("/health", s.handleHealth)
 	s.mux.HandleFunc("/templates", s.handleTemplates)
 	s.mux.HandleFunc("/templates/", s.handleTemplate)
 	s.mux.HandleFunc("/sandboxes", s.handleSandboxes)
@@ -87,6 +88,15 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/volumes", s.handleVolumes)
 	s.mux.HandleFunc("/volumes/", s.handleVolume)
 	s.mux.HandleFunc("/ports", s.handleAllPorts)
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	sandboxes, _ := s.store.ListSandboxes()
+	writeJSON(w, 200, map[string]any{
+		"status":    "ok",
+		"sandboxes": len(sandboxes),
+		"uptime":    time.Since(s.startTime).Round(time.Second).String(),
+	})
 }
 
 // --- Templates ---

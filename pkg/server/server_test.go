@@ -915,6 +915,43 @@ func TestRequestBodyTooLarge(t *testing.T) {
 	}
 }
 
+func TestHealthEndpoint(t *testing.T) {
+	_, ts := setup(t)
+
+	// Health should work with auth
+	resp := doReq(t, ts, "GET", "/health", nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var health map[string]any
+	decodeJSON(t, resp, &health)
+	if health["status"] != "ok" {
+		t.Fatalf("expected status ok, got %v", health["status"])
+	}
+	if _, ok := health["uptime"]; !ok {
+		t.Fatal("expected uptime field")
+	}
+}
+
+func TestHealthNoAuth(t *testing.T) {
+	_, ts := setup(t)
+
+	// Health should work WITHOUT auth token
+	req, _ := http.NewRequest("GET", ts.URL+"/health", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200 without auth, got %d", resp.StatusCode)
+	}
+	var health map[string]any
+	decodeJSON(t, resp, &health)
+	if health["status"] != "ok" {
+		t.Fatalf("expected status ok, got %v", health["status"])
+	}
+}
+
 func TestWSAuthWrongToken(t *testing.T) {
 	_, ts := setup(t)
 

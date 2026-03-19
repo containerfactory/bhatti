@@ -36,6 +36,7 @@ type Server struct {
 	proxy       *ProxyManager
 	stopScan    context.CancelFunc
 	stopThermal context.CancelFunc
+	startTime   time.Time
 }
 
 // New creates a new API server. If webDir is non-empty, serves the web UI at /.
@@ -46,6 +47,7 @@ func New(eng engine.Engine, st *store.Store, authToken string, webDir ...string)
 		authToken: authToken,
 		mux:       http.NewServeMux(),
 		proxy:     NewProxyManager(eng),
+		startTime: time.Now(),
 	}
 	s.routes()
 	if len(webDir) > 0 && webDir[0] != "" {
@@ -235,7 +237,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func isStaticPath(path string) bool {
-	return path == "/" || path == "/index.html" || strings.HasPrefix(path, "/static/")
+	return path == "/" || path == "/index.html" || path == "/health" || strings.HasPrefix(path, "/static/")
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

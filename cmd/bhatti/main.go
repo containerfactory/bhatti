@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/sahil-shubham/bhatti/pkg"
 	"github.com/sahil-shubham/bhatti/pkg/engine"
@@ -91,30 +93,45 @@ func runDaemon() {
 	// Resolve the port for display
 	port := cfg.Listen
 
-	slog.Info("bhatti listening", "addr", cfg.Listen)
-	if lanIP := getLanIP(); lanIP != "" {
-		slog.Info("endpoints",
-			"local", "http://localhost"+port,
-			"network", "http://"+lanIP+port,
-		)
+	httpServer := &http.Server{
+		Addr:    cfg.Listen,
+		Handler: srv,
 	}
 
-	// Graceful shutdown: clean up TAP devices on SIGTERM/SIGINT
 	go func() {
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-		sig := <-sigCh
-		slog.Info("shutting down", "signal", sig)
-		if shutdowner, ok := eng.(interface{ Shutdown() }); ok {
-			shutdowner.Shutdown()
+		slog.Info("bhatti listening", "addr", cfg.Listen)
+		if lanIP := getLanIP(); lanIP != "" {
+			slog.Info("endpoints",
+				"local", "http://localhost"+port,
+				"network", "http://"+lanIP+port,
+			)
 		}
-		os.Exit(0)
+		if err := httpServer.ListenAndServe(); err != http.ErrServerClosed {
+			slog.Error("server failed", "error", err)
+			os.Exit(1)
+		}
 	}()
 
-	if err := http.ListenAndServe(cfg.Listen, srv); err != nil {
-		slog.Error("server failed", "error", err)
-		os.Exit(1)
+	// Wait for SIGTERM/SIGINT
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	sig := <-sigCh
+	slog.Info("shutting down", "signal", sig)
+
+	// Drain HTTP connections (5s timeout)
+	shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutCancel()
+	httpServer.Shutdown(shutCtx)
+
+	// Stop background goroutines (port scanner, thermal manager)
+	srv.Close()
+
+	// Stop engine (kill VMs, clean TAPs)
+	if shutdowner, ok := eng.(interface{ Shutdown() }); ok {
+		shutdowner.Shutdown()
 	}
+
+	slog.Info("shutdown complete")
 }
 
 // recoverVMs restores Firecracker VMs from the SQLite store on startup.
