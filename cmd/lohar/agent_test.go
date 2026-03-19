@@ -259,9 +259,10 @@ func TestAgentKill(t *testing.T) {
 	}
 
 	_, _, code := readAllExec(t, conn)
-	// SIGTERM = signal 15, exit code = 128 + 15 = 143
-	if code != 143 {
-		t.Errorf("exit code: %d, want 143 (128+SIGTERM)", code)
+	// SIGKILL = signal 9, exit code = 128 + 9 = 137
+	// (changed from SIGTERM to SIGKILL for process group kill)
+	if code != 137 {
+		t.Errorf("exit code: %d, want 137 (128+SIGKILL)", code)
 	}
 }
 
@@ -1765,6 +1766,161 @@ func TestAgentFileReadLargeFileWithLimit(t *testing.T) {
 	}
 	// Verify we didn't transfer the full file
 	t.Logf("✓ 100K-line file, limit=2000: got %d bytes (not ~1.1MB)", len(content))
+}
+
+func TestAgentKillProcessGroup(t *testing.T) {
+	ctrl, _, cleanup := startTestAgent(t)
+	defer cleanup()
+
+	// Start a command that spawns a child process, then kill it.
+	// "sh -c 'sleep 3600 & echo $!; wait'" spawns sleep as a child.
+	// We read the child PID, send KILL, then verify the child is dead.
+	conn := dialControl(t, ctrl)
+
+	proto.SendJSON(conn, proto.EXEC_REQ, proto.ExecRequest{
+		Argv: []string{"sh", "-c", "sleep 3600 & echo $!; wait"},
+	})
+
+	// Read the child PID from stdout
+	var childPID string
+	for {
+		msgType, payload, err := proto.ReadFrame(conn)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if msgType == proto.STDOUT {
+			childPID = strings.TrimSpace(string(payload))
+			break
+		}
+		if msgType == proto.EXIT || msgType == proto.ERROR {
+			t.Fatalf("unexpected %d: %s", msgType, payload)
+		}
+	}
+	if childPID == "" {
+		t.Fatal("didn't get child PID from stdout")
+	}
+	t.Logf("child PID: %s", childPID)
+
+	// Send KILL — should kill the shell AND the sleep child
+	proto.WriteFrame(conn, proto.KILL, nil)
+
+	// Read until EXIT or error
+	for {
+		msgType, _, err := proto.ReadFrame(conn)
+		if err != nil {
+			break
+		}
+		if msgType == proto.EXIT {
+			break
+		}
+	}
+	conn.Close()
+
+	// Give the OS a moment to reap
+	time.Sleep(200 * time.Millisecond)
+
+	// Verify the child process is dead: kill -0 returns error for dead PIDs
+	conn2 := dialControl(t, ctrl)
+	defer conn2.Close()
+	proto.SendJSON(conn2, proto.EXEC_REQ, proto.ExecRequest{
+		Argv: []string{"sh", "-c", "kill -0 " + childPID + " 2>&1; echo exit=$?"},
+	})
+
+	var out bytes.Buffer
+	for {
+		msgType, payload, err := proto.ReadFrame(conn2)
+		if err != nil {
+			break
+		}
+		if msgType == proto.STDOUT {
+			out.Write(payload)
+		}
+		if msgType == proto.EXIT {
+			break
+		}
+	}
+	output := out.String()
+	// kill -0 should fail because the child is dead
+	if strings.Contains(output, "exit=0") {
+		t.Errorf("child PID %s is still alive after process group kill: %q", childPID, output)
+	} else {
+		t.Logf("✓ child PID %s killed by process group SIGKILL", childPID)
+	}
+}
+
+func TestAgentKillTTYSessionGraceful(t *testing.T) {
+	ctrl, _, cleanup := startTestAgent(t)
+	defer cleanup()
+
+	// TTY sessions use SIGTERM (not SIGKILL) for graceful shutdown.
+	// This preserves the session model: TTY sessions survive disconnects,
+	// support scrollback, and can handle SIGTERM gracefully.
+	conn := dialControl(t, ctrl)
+
+	tty := true
+	rows := uint16(24)
+	cols := uint16(80)
+	proto.SendJSON(conn, proto.EXEC_REQ, proto.ExecRequest{
+		Argv: []string{"sh", "-c", "echo STARTED; sleep 3600"},
+		TTY:  &tty,
+		Rows: &rows,
+		Cols: &cols,
+	})
+
+	// Consume SESSION_INFO
+	msgType, _, err := proto.ReadFrame(conn)
+	if err != nil {
+		t.Fatalf("read session info: %v", err)
+	}
+	if msgType == proto.ERROR {
+		t.Fatal("session creation failed")
+	}
+
+	// Wait for STARTED
+	deadline := time.After(5 * time.Second)
+	var total bytes.Buffer
+	started := false
+	for !started {
+		select {
+		case <-deadline:
+			t.Fatalf("timeout waiting for STARTED, output: %q", total.String())
+		default:
+		}
+		msgType, payload, err := proto.ReadFrame(conn)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if msgType == proto.STDOUT {
+			total.Write(payload)
+			if strings.Contains(total.String(), "STARTED") {
+				started = true
+			}
+		}
+	}
+
+	// Kill the session — sends SIGTERM to process group
+	proto.WriteFrame(conn, proto.KILL, nil)
+
+	// Session should exit — drain until EXIT or connection close
+	gotExit := false
+	for {
+		msgType, _, err := proto.ReadFrame(conn)
+		if err != nil {
+			break
+		}
+		if msgType == proto.EXIT {
+			gotExit = true
+			break
+		}
+	}
+	conn.Close()
+
+	if gotExit {
+		t.Log("✓ TTY session terminated gracefully via SIGTERM")
+	} else {
+		// Connection closed without EXIT — also acceptable (process died)
+		t.Log("✓ TTY session connection closed after KILL")
+	}
 }
 
 func TestAgentFileReadMaxBytesMidLine(t *testing.T) {

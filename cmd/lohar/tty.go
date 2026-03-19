@@ -214,7 +214,12 @@ func readHostInput(conn net.Conn, sess *Session) {
 		case proto.KILL:
 			sess.mu.Lock()
 			if sess.Cmd != nil && sess.Cmd.Process != nil {
-				sess.Cmd.Process.Signal(syscall.SIGTERM)
+				// TTY sessions use SIGTERM to allow graceful shutdown.
+				// The session's Setsid:true means the shell is the session
+				// leader — SIGTERM to the process group lets it clean up.
+				// This preserves the session model: if the process handles
+				// SIGTERM and stays alive, the session remains reattachable.
+				syscall.Kill(-sess.Cmd.Process.Pid, syscall.SIGTERM)
 			}
 			sess.mu.Unlock()
 			return

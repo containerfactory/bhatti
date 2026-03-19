@@ -108,7 +108,8 @@ func handleControlConnection(conn net.Conn) {
 		}
 		s.mu.Lock()
 		if s.Cmd != nil && s.Cmd.Process != nil {
-			s.Cmd.Process.Signal(syscall.SIGTERM)
+			// Kill entire process group for reliable cleanup
+			syscall.Kill(-s.Cmd.Process.Pid, syscall.SIGKILL)
 		}
 		s.mu.Unlock()
 		exit := proto.ExitPayload(0)

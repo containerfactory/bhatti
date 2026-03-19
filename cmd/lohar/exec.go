@@ -24,6 +24,8 @@ func handlePipedExec(conn net.Conn, req proto.ExecRequest) {
 	if req.Cwd != nil {
 		cmd.Dir = *req.Cwd
 	}
+	// Run in own process group so KILL can terminate the entire tree
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
@@ -105,7 +107,12 @@ func handlePipedExec(conn net.Conn, req proto.ExecRequest) {
 			case proto.STDIN:
 				stdinPipe.Write(payload)
 			case proto.KILL:
-				cmd.Process.Signal(syscall.SIGTERM)
+				// Kill entire process group (negative PID), not just the shell.
+				// This ensures child processes (npm install → node, etc.) are
+				// also terminated. Requires Setpgid: true on SysProcAttr.
+				if cmd.Process != nil {
+					syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+				}
 				return
 			}
 		}

@@ -96,7 +96,7 @@ func (s *Session) startIdleTimer() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		if s.Cmd != nil && s.Cmd.Process != nil && s.ExitCode == nil {
-			s.Cmd.Process.Signal(syscall.SIGTERM)
+			syscall.Kill(-s.Cmd.Process.Pid, syscall.SIGKILL)
 		}
 	})
 }
