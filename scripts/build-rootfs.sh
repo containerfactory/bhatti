@@ -77,6 +77,9 @@ debootstrap --arch="${DEB_ARCH}" noble "$MOUNT" "${MIRROR}"
 # DNS for chroot network access.
 cp /etc/resolv.conf "$MOUNT/etc/resolv.conf"
 
+# Enable universe repo (needed for ripgrep, fd-find)
+echo "deb ${MIRROR} noble main universe" > "$MOUNT/etc/apt/sources.list"
+
 # Bind-mount for chroot.
 mount --bind /proc    "$MOUNT/proc"
 mount --bind /sys     "$MOUNT/sys"
@@ -92,7 +95,11 @@ apt-get update
 apt-get install -y --no-install-recommends \
     zsh git curl wget ca-certificates gnupg \
     tmux vim-tiny htop jq unzip xz-utils \
-    locales sudo socat iproute2
+    locales sudo socat iproute2 \
+    ripgrep fd-find
+
+# fd-find installs as fdfind on Ubuntu, symlink to fd
+ln -sf /usr/bin/fdfind /usr/local/bin/fd
 
 sed -i "/en_US.UTF-8/s/^# //g" /etc/locale.gen
 locale-gen
