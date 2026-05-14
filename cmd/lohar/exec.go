@@ -19,6 +19,9 @@ type frameMsg struct {
 	payload []byte
 }
 
+// User name
+const userName = "ubuntu"
+
 // handleDetachedExec starts a command in a new session (setsid) with stdout/stderr
 // redirected to a file, then returns immediately with the child PID and output
 // file path. The process survives vsock connection close.
@@ -209,7 +212,7 @@ func buildEnv(env map[string]string) []string {
 	defaults := map[string]string{
 		"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"TERM": "xterm-256color",
-		"HOME": "/home/lohar",
+		"HOME": "/home/" + userName,
 		"LANG": "en_US.UTF-8",
 	}
 	// Merge config drive env vars (secrets, etc.)
@@ -233,5 +236,5 @@ func buildEnv(env map[string]string) []string {
 // log/slog because lohar's output is only visible in debug mode and the
 // "lohar: " prefix pattern is already consistent.
 func logf(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "lohar: "+format+"\n", args...)
+	fmt.Fprintf(os.Stderr, userName+": "+format+"\n", args...)
 }

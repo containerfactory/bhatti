@@ -282,11 +282,18 @@ func (e *Engine) Create(ctx context.Context, spec engine.SandboxSpec) (info engi
 		slog.Warn("FC metrics setup failed", "error", err)
 	}
 
+	
 	// Boot args include ip= for kernel-level network configuration.
 	// Uses the user's bridge gateway instead of a hardcoded IP.
+	// Prefer the system init if present, otherwise fall back to lohar.
+	initPath := "/usr/local/bin/lohar"
+	if _, statErr := os.Stat("/sbin/init"); statErr == nil {
+		initPath = "/sbin/init"
+	}
+
 	bootArgs := fmt.Sprintf(
-		"reboot=k panic=1 pci=off 8250.nr_uarts=0 init=/usr/local/bin/lohar quiet loglevel=0 ip=%s::%s:255.255.255.0::eth0:off:1.1.1.1:8.8.8.8:",
-		guestIP, userNet.GatewayIP)
+		"reboot=k panic=1 pci=off 8250.nr_uarts=0 init=%s quiet loglevel=0 ip=%s::%s:255.255.255.0::eth0:off:1.1.1.1:8.8.8.8:",
+		initPath, guestIP, userNet.GatewayIP)
 
 	if err = fcPut(ctx, client, "/boot-source", fmt.Sprintf(
 		`{"kernel_image_path":%q,"boot_args":%q}`,
