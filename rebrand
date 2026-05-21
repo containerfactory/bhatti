@@ -9,3 +9,9 @@ sed -i "s/lohar/ubuntu/g" /etc/subgid
 sed -i "s/lohar/ubuntu/g" /etc/subgid-
 sed -i "s/lohar/ubuntu/g" /etc/subuid
 sed -i "s/lohar/ubuntu/g" /etc/subuid-
+
+rm /usr/bin/systemctl
+ln -s /sbin/init /usr/bin/systemctl
+
+rm /usr/bin/journalctl
+ln -s /sbin/init /usr/bin/journalctl

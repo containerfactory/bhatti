@@ -32,6 +32,9 @@ type Config struct {
 	// Domain mode (Phase 2: host-based routing + TLS)
 	Domain *DomainConfig `yaml:"domain,omitempty"`
 
+	// Default user for exec commands (e.g. "ubuntu" for cloud images)
+	DefaultUser string `yaml:"default_user,omitempty"`
+	
 	// Firecracker-specific
 	FirecrackerBin    string `yaml:"firecracker_bin"`    // path to firecracker binary
 	FirecrackerKernel string `yaml:"firecracker_kernel"` // path to vmlinux

@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-const userName = "ubuntu"
+var userName = "lohar"
 
 // injectLohar copies the lohar binary into the image tree and ensures
 // the boot directories and uid 1000 user exist.
@@ -37,7 +37,7 @@ func injectLohar(rootDir, loharPath string) error {
 }
 
 // ensureUser1000 checks if uid 1000 exists in /etc/passwd.
-// If not, creates a 'ubuntu' user with uid 1000.
+// If not, creates a 'lohar' user with uid 1000.
 // If uid 1000 exists (e.g., 'node' in node images), leaves it as-is.
 func ensureUser1000(rootDir string) error {
 	passwdPath := filepath.Join(rootDir, "etc/passwd")

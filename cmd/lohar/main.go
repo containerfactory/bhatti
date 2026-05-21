@@ -112,6 +112,9 @@ func runAgent() {
 
 	cfg := loadConfigDrive()
 	if cfg != nil {
+		if cfg.User != "" {
+			userName = cfg.User
+		}
 		hostname := "bhatti"
 		if cfg.Hostname != "" {
 			hostname = cfg.Hostname
@@ -364,8 +367,9 @@ func startSyslogReceiver(reg *Registry) {
 
 // parseSyslogMessage extracts the tag (service name) and message from a
 // syslog datagram. Handles common formats:
-//   "<priority>Mon DD HH:MM:SS hostname tag[pid]: message"
-//   "<priority>tag: message"
+//
+//	"<priority>Mon DD HH:MM:SS hostname tag[pid]: message"
+//	"<priority>tag: message"
 func parseSyslogMessage(raw string) (tag, msg string) {
 	s := raw
 	if len(s) > 0 && s[0] == '<' {
