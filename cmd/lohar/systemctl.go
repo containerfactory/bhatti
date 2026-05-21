@@ -35,13 +35,13 @@ import (
 // Well-known targets that are always "active" — invoke-rc.d checks
 // sysinit.target to determine runlevel.
 var alwaysActiveTargets = map[string]bool{
-	"sysinit":      true,
-	"multi-user":   true,
-	"default":      true,
-	"network":      true,
+	"sysinit":        true,
+	"multi-user":     true,
+	"default":        true,
+	"network":        true,
 	"network-online": true,
-	"sockets":      true,
-	"basic":        true,
+	"sockets":        true,
+	"basic":          true,
 }
 
 // runSystemctl is the entry point when invoked as /usr/bin/systemctl.
@@ -588,11 +588,12 @@ func svcStart(u *Unit) error {
 		}
 	}
 
+	var startErr error
 	switch svcType {
 	case "oneshot":
-		return runServiceCommand(execStart, svc)
+		startErr = runServiceCommand(execStart, svc)
 	case "forking":
-		return startForking(u, execStart, svc)
+		startErr = startForking(u, execStart, svc)
 	default:
 		// simple, exec, dbus -- treated as simple daemons (active on
 		// fork+exec). notify is also handled by startDaemon but blocks
@@ -602,10 +603,32 @@ func svcStart(u *Unit) error {
 			return err
 		}
 		if svcType == "notify" {
-			return waitForNotifyReady(u, svc)
+			startErr = waitForNotifyReady(u, svc)
 		}
-		return nil
 	}
+	if startErr != nil {
+		return startErr
+	}
+
+	// ExecStartPost: runs after the unit is considered active. For
+	// Type=oneshot/forking this is after ExecStart returns; for
+	// Type=simple it's after fork+exec; for Type=notify it's after
+	// READY=1 from sd_notify. Mirrors systemd's semantics: leading '-'
+	// makes failure non-fatal; otherwise a failing post stops the unit.
+	// (PLAN-tiers-systemd.md depends on this for chmod-the-socket
+	// hooks; arrived as part of v1.11.3.)
+	for _, cmdLine := range svc.getAll("Service", "ExecStartPost") {
+		ignoreErr := strings.HasPrefix(cmdLine, "-")
+		if err := runServiceCommand(cmdLine, svc); err != nil {
+			if ignoreErr {
+				fmt.Fprintf(os.Stderr, "ExecStartPost (ignored): %v\n", err)
+			} else {
+				return fmt.Errorf("ExecStartPost failed: %w", err)
+			}
+		}
+	}
+
+	return nil
 }
 
 // waitForNotifyReady blocks until the unit's .activating marker is
@@ -642,6 +665,24 @@ func waitForNotifyReady(u *Unit, svc serviceFile) error {
 	return fmt.Errorf("%s did not send READY=1 within %v", u.Canonical, timeout)
 }
 
+// spawnHelperPath is the binary invoked by startDaemon to perform the
+// race-free cgroup placement before execve into the daemon. Defaults to
+// /proc/self/exe — the kernel-maintained symlink to the running binary,
+// which in production resolves to lohar itself (started by the kernel
+// as PID 1 from /usr/local/bin/lohar). The argv[1]-verb dispatch in
+// main.go then routes the subprocess to runSpawn.
+//
+// Tests override this (and spawnHelperPrefix / spawnHelperEnv below) so
+// that startDaemon's subprocess is the test binary itself, re-routed
+// through TestMain to runSpawn. /proc/self/exe in a test binary is the
+// test binary, which has its own main (testing.M.Run) and would not
+// hit our argv-verb dispatch — hence the redirection.
+var (
+	spawnHelperPath   = "/proc/self/exe"
+	spawnHelperPrefix []string // argv prepended before "spawn ..."
+	spawnHelperEnv    []string // extra env vars set on cmd.Env
+)
+
 func startDaemon(u *Unit, execStart string, svc serviceFile) error {
 	execStart = strings.TrimLeft(execStart, "-!+:@")
 	if execStart == "" {
@@ -658,18 +699,48 @@ func startDaemon(u *Unit, execStart string, svc serviceFile) error {
 		fmt.Fprintf(os.Stderr, "lohar: cgroup setup for %s: %v (proceeding without isolation)\n", u.Canonical, err)
 	}
 
-	cmd := exec.Command("/bin/sh", "-c", "exec "+execStart)
+	// Spawn via the `lohar spawn` helper instead of /bin/sh directly.
+	// The helper does one thing before exec'ing into the daemon: writes
+	// its own PID into <cgroup>/cgroup.procs. Because the write happens
+	// before any fork by the daemon (X-server detach, dbus pre-fork, etc.)
+	// and execve preserves cgroup membership, every descendant of the
+	// daemon lands in the unit's cgroup. Stop-time cgroup.kill then
+	// catches all of them.
+	//
+	// This replaces the previous post-cmd.Start() PlaceInCgroup call,
+	// which had a race window where the daemon could fork before being
+	// moved (e.g. Xkasmvnc's daemon(3) fork escaping to 0::/, leaving
+	// an orphan that systemctl stop couldn't kill). See spawn.go and
+	// docs/internal/PLAN-spawn-helper.md for the full story.
+	//
+	// spawnHelperPath defaults to /proc/self/exe — the kernel-maintained
+	// symlink to lohar's binary. Cheap (no syscall on Linux: kernel-side
+	// resolve at execve time), test-friendly, and standard practice for
+	// re-exec patterns (gosu, su-exec, runc all use it). The Prefix and
+	// Env slices are empty in production and only populated by tests.
+	spawnArgs := append([]string{}, spawnHelperPrefix...)
+	spawnArgs = append(spawnArgs,
+		"spawn",
+		"--cgroup", u.CgroupPath(),
+		"--", "/bin/sh", "-c", "exec "+execStart,
+	)
+	cmd := exec.Command(spawnHelperPath, spawnArgs...)
 	cmd.Dir = svc.get("Service", "WorkingDirectory")
 	cmd.Env = buildServiceEnv(svc)
 	// For Type=notify daemons we expose NOTIFY_SOCKET so libsystemd's
 	// sd_notify(3) (or any reimplementation) can find our receiver.
 	// Setting it unconditionally is harmless for non-notify daemons --
-	// they just won't connect to it.
+	// they just won't connect to it. Inherited through the spawn helper
+	// across both execves (lohar spawn → /bin/sh → daemon).
 	cmd.Env = append(cmd.Env, "NOTIFY_SOCKET="+u.reg.Config.NotifySocketPath)
+	cmd.Env = append(cmd.Env, spawnHelperEnv...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	cmd.Stdin = nil
 
-	// Capture stdout/stderr to log file for debugging.
+	// Capture stdout/stderr to log file for debugging. The log fd is
+	// inherited by lohar spawn and then by the daemon across both
+	// execves — close-on-exec is not set by exec.Command, so the fd
+	// survives unless syscall.Exec explicitly closes it (it doesn't).
 	os.MkdirAll(u.reg.Config.LogDir, 0755)
 	logFile, err := os.OpenFile(u.LogPath(),
 		os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
@@ -690,18 +761,11 @@ func startDaemon(u *Unit, execStart string, svc serviceFile) error {
 		logFile.Close()
 	}
 
-	// Move the process into the unit's cgroup. The window between
-	// cmd.Start() and this write is brief but real — the daemon runs
-	// briefly in the parent's cgroup. systemd avoids this with
-	// CLONE_INTO_CGROUP via clone3, which Go's os/exec doesn't expose.
-	// For our use case this is acceptable: the daemon is doing exec
-	// setup (loading shared libs, parsing config) during this window,
-	// not consuming bulk resources.
-	if err := u.PlaceInCgroup(cmd.Process.Pid); err != nil {
-		fmt.Fprintf(os.Stderr, "lohar: cgroup place %d in %s: %v\n",
-			cmd.Process.Pid, u.Canonical, err)
-	}
-
+	// cmd.Process.Pid is the PID of the forked child, which is the same
+	// PID running lohar spawn, /bin/sh, and ultimately the daemon —
+	// execve preserves PID across all three transitions. The cgroup
+	// placement happens inside lohar spawn before its execve into
+	// /bin/sh; no PlaceInCgroup call is needed here.
 	u.WritePID(cmd.Process.Pid)
 	u.ClearFailed() // a new run starts with a clean slate
 
@@ -778,12 +842,12 @@ func watchAndMaybeRestart(u *Unit, cmd *exec.Cmd) {
 // shouldRestart maps the Restart= directive to a yes/no for the given
 // exit code. Mirrors systemd's policy:
 //
-//   no            never
-//   always        always (also after clean exits)
-//   on-success    only after exit 0
-//   on-failure    after non-zero exit (the common case)
-//   on-abnormal   after signals (exit > 128, by convention)
-//   "" (unset)    treated as no — services explicitly opt in
+//	no            never
+//	always        always (also after clean exits)
+//	on-success    only after exit 0
+//	on-failure    after non-zero exit (the common case)
+//	on-abnormal   after signals (exit > 128, by convention)
+//	"" (unset)    treated as no — services explicitly opt in
 func shouldRestart(policy string, exitCode int) bool {
 	failed := exitCode != 0
 	switch policy {
@@ -1620,7 +1684,37 @@ func parseServiceFile(path string) serviceFile {
 		return sf
 	}
 	section := ""
-	for _, line := range strings.Split(string(data), "\n") {
+
+	// First pass: glue backslash-continuation lines together so multi-line
+	// directives parse as one logical line. systemd does this in
+	// `extract_first_word` (`src/basic/extract-word.c`); a backslash
+	// immediately before the newline joins this line with the next, with
+	// the backslash and the newline dropped. Common in upstream unit files
+	// for long ExecStart/Environment directives; without it those land as
+	// truncated values plus a stream of unparseable orphan lines.
+	rawLines := strings.Split(string(data), "\n")
+	lines := make([]string, 0, len(rawLines))
+	var joined strings.Builder
+	for _, l := range rawLines {
+		if strings.HasSuffix(l, "\\") {
+			joined.WriteString(l[:len(l)-1])
+			joined.WriteByte(' ')
+			continue
+		}
+		if joined.Len() > 0 {
+			joined.WriteString(l)
+			lines = append(lines, joined.String())
+			joined.Reset()
+			continue
+		}
+		lines = append(lines, l)
+	}
+	// Trailing backslash with no following line: keep what we have.
+	if joined.Len() > 0 {
+		lines = append(lines, joined.String())
+	}
+
+	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
 			continue
@@ -1654,7 +1748,7 @@ func (sf serviceFile) get(section, key string) string {
 }
 
 // getAll returns every value for the given section/key in order. Used for
-// list-typed directives like ExecStartPre, Environment, EnvironmentFile.
+// list-typed directives like ExecStartPre, ExecStartPost, Environment, EnvironmentFile.
 // Reset markers (empty values) are filtered out by merge() before this is
 // called, so callers don't need to handle them.
 func (sf serviceFile) getAll(section, key string) []string {
@@ -1670,17 +1764,19 @@ func (sf serviceFile) getAll(section, key string) []string {
 // merge appends another serviceFile's directives onto this one, implementing
 // systemd's drop-in merge semantics:
 //
-//   - List-valued directives (ExecStartPre, Environment, etc.) accumulate —
+//   - List-valued directives (ExecStartPre, ExecStartPost, Environment, etc.) accumulate —
 //     a later directive is appended to the list returned by getAll().
+//
 //   - Scalar directives (ExecStart, Type, User) effectively override because
 //     get() returns the LAST value.
+//
 //   - **Reset semantics**: an empty assignment (e.g. `ExecStart=`) clears
 //     every prior entry for that key in that section. This is the
 //     conventional way drop-ins replace a fragment's directive cleanly:
 //
-//         [Service]
-//         ExecStart=
-//         ExecStart=/usr/bin/foo --new-args
+//     [Service]
+//     ExecStart=
+//     ExecStart=/usr/bin/foo --new-args
 //
 //     The empty marker itself is dropped after the reset; only the
 //     subsequent assignment(s) remain.
